@@ -1,0 +1,29 @@
+{pkgs}: {
+  deps = [
+    pkgs.harfbuzz
+    pkgs.nss
+    pkgs.chromium
+    pkgs.redis
+    pkgs.openssh
+    pkgs.ffmpeg
+    pkgs.imagemagick
+    pkgs.wget
+    pkgs.zlib
+    pkgs.tk
+    pkgs.tcl
+    pkgs.openjpeg
+    pkgs.libxcrypt
+    pkgs.libwebp
+    pkgs.libtiff
+    pkgs.libjpeg
+    pkgs.libimagequant
+    pkgs.lcms2
+    pkgs.freetype
+    pkgs.jq
+    pkgs.litterbox
+    pkgs.lsof
+    pkgs.pm2
+    pkgs.psmisc
+    pkgs.postgresql
+  ];
+}

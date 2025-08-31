@@ -1,0 +1,11 @@
+{
+  "watch": ["server/"],
+  "ignore": [
+    "data/",
+    "*.json",
+    "node_modules/",
+    "client/"
+  ],
+  "ext": "js,mjs,json",
+  "delay": 2000
+}
