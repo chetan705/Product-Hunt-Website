@@ -172,6 +172,7 @@ class DatabaseService {
         launchDate: productData.launchDate || null,
         accelerator: productData.accelerator || null,
         phGithub: productData.phGithub || null,
+        thumbnail: productData.thumbnail || null,
         status: 'pending',
         syncedToSheets: false,
         createdAt: new Date().toISOString(),
@@ -532,6 +533,7 @@ class DatabaseService {
         ...data.products[productId],
         ...phDetails,
         phGithub: phDetails.phGithub,
+        thumbnail: phDetails.thumbnail || data.products[productId].thumbnail,
         updatedAt: new Date().toISOString()
       };
 

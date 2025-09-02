@@ -19,7 +19,7 @@ code {
     monospace;
 }
 
-/* Custom component styles that complement Tailwind */
+/* Custom component styles */
 @layer components {
   .btn-primary {
     @apply bg-orange-500 text-white font-semibold py-2 px-4 rounded-lg transition-all duration-200 hover:bg-orange-600 hover:shadow-lg disabled:opacity-60 disabled:cursor-not-allowed;
@@ -50,7 +50,8 @@ code {
   }
 
   .card {
-    @apply bg-white rounded-xl p-6 shadow-md border border-gray-200 transition-all duration-200 hover:shadow-lg;
+    @apply bg-white rounded-xl p-6 shadow-md border border-gray-200 transition-all duration-200 hover:shadow-lg flex flex-col;
+    gap: 0.75rem;
   }
 
   .form-input {
@@ -67,67 +68,124 @@ code {
 }
 
 /* Product card specific styles */
-.product-card {
-  @apply h-full flex flex-col;
+.product-card-container {
+  height: 500px;
   min-height: 500px;
+  max-height: 500px;
+  width: 100%;
+  position: relative;
+  margin-bottom: 1.5rem;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(237, 137, 54, 0.5) rgba(237, 137, 54, 0.1);
+}
+
+.product-card-container::-webkit-scrollbar {
+  width: 6px;
+}
+
+.product-card-container::-webkit-scrollbar-track {
+  background: rgba(237, 137, 54, 0.1);
+  border-radius: 10px;
+}
+
+.product-card-container::-webkit-scrollbar-thumb {
+  background-color: rgba(237, 137, 54, 0.5);
+  border-radius: 10px;
+}
+
+.product-card {
+  @apply flex flex-col w-full p-4 space-y-2;
+  height: auto;
+  min-height: 500px;
+  background: linear-gradient(145deg, #ffffff 0%, #fef7f5 100%);
+  border-radius: 0.75rem;
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+  border: 1px solid rgba(229, 231, 235, 1);
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(237, 137, 54, 0.5) rgba(237, 137, 54, 0.1);
+}
+
+.product-card::-webkit-scrollbar {
+  width: 6px;
+}
+
+.product-card::-webkit-scrollbar-track {
+  background: rgba(237, 137, 54, 0.1);
+  border-radius: 10px;
+}
+
+.product-card::-webkit-scrollbar-thumb {
+  background-color: rgba(237, 137, 54, 0.5);
+  border-radius: 10px;
 }
 
 .product-card .card-header {
-  @apply p-6 border-b border-gray-100;
+  @apply mb-3 flex flex-col gap-2;
 }
 
 .product-card .card-body {
-  @apply flex-grow;
+  @apply flex flex-col space-y-3;
+  min-height: 0;
 }
 
 .product-card .card-footer {
-  @apply p-6 mt-auto border-t border-gray-100;
-}
-
-/* Upvote button styles */
-.upvote-badge {
-  @apply flex items-center justify-center rounded-full shadow-md transition-all duration-200 hover:shadow-lg;
-  width: 50px;
-  height: 50px;
-}
-
-.upvote-badge.voted {
-  @apply bg-orange-500 text-white border border-orange-600;
-}
-
-.upvote-badge:not(.voted) {
-  @apply bg-white text-orange-500 border border-gray-200 hover:border-orange-300;
-}
-
-/* LinkedIn button styles */
-.linkedin-button {
-  @apply bg-[#0077b5] text-white hover:bg-[#0069a0] font-medium text-sm flex items-center px-3 py-1 rounded-md transition-colors duration-200;
+  @apply mt-auto px-4 py-2 sticky bottom-0 bg-gradient-to-b from-transparent to-[#fef7f5];
 }
 
 /* Swipe card animation styles */
 .swipe-card-container {
   @apply relative w-full;
   height: 500px;
+  min-height: 500px;
+  max-height: 500px;
 }
 
 .swipe-card {
-  @apply absolute inset-0 bg-white rounded-lg shadow-md border border-gray-200 p-6 space-y-4;
+  @apply absolute inset-0 bg-gradient-to-br from-white to-[#fef7f5] rounded-xl shadow-md border border-gray-200 p-4 space-y-2 overflow-y-auto;
+  height: 100%;
+  min-height: 100%;
+  max-height: 100%;
   transition: transform 0.3s ease, opacity 0.3s ease;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(237, 137, 54, 0.5) rgba(237, 137, 54, 0.1);
+  z-index: 10;
 }
 
+.swipe-card::-webkit-scrollbar {
+  width: 6px;
+}
+
+.swipe-card::-webkit-scrollbar-track {
+  background: rgba(237, 137, 54, 0.1);
+  border-radius: 10px;
+}
+
+.swipe-card::-webkit-scrollbar-thumb {
+  background-color: rgba(237, 137, 54, 0.5);
+  border-radius: 10px;
+}
+
+/* Swipe animations */
 .swipe-card.swiping-left {
-  transform: translateX(-100vw) rotate(-30deg);
+  transform: translateX(-120vw) rotate(-30deg);
   opacity: 0;
+  transition: transform 0.5s ease, opacity 0.3s ease;
 }
 
 .swipe-card.swiping-right {
-  transform: translateX(100vw) rotate(30deg);
+  transform: translateX(120vw) rotate(30deg);
   opacity: 0;
+  transition: transform 0.5s ease, opacity 0.3s ease;
 }
 
+/* Swipe overlays */
 .swipe-overlay {
-  @apply absolute inset-0 flex items-center justify-center rounded-lg bg-opacity-70;
+  @apply absolute inset-0 flex items-center justify-center rounded-xl bg-opacity-70;
   transition: opacity 0.3s ease;
+  pointer-events: none;
+  opacity: 0;
 }
 
 .swipe-overlay.accept {
@@ -138,21 +196,155 @@ code {
   @apply bg-red-500;
 }
 
+.swipe-card:hover .swipe-overlay.accept,
+.swipe-card.swiping-right .swipe-overlay.accept {
+  opacity: 0.7;
+}
+
+.swipe-card:hover .swipe-overlay.reject,
+.swipe-card.swiping-left .swipe-overlay.reject {
+  opacity: 0.7;
+}
+
+.swipe-overlay.accept::after {
+  content: '✓';
+  font-size: 48px;
+  color: white;
+}
+
+.swipe-overlay.reject::after {
+  content: '✕';
+  font-size: 48px;
+  color: white;
+}
+
+/* Upvote button styles */
+.upvote-badge {
+  @apply flex items-center justify-center rounded-full shadow-md transition-all duration-200 hover:shadow-lg;
+  width: 40px;
+  height: 40px;
+}
+
+.upvote-badge.voted {
+  @apply bg-orange-500 text-white border border-orange-600;
+}
+
+.upvote-badge:not(.voted) {
+  @apply bg-white text-orange-500 border border-gray-200 hover:border-orange-300;
+}
+
 .upvote-badge:hover {
   transform: translateY(-2px);
+}
+
+/* LinkedIn button styles */
+.linkedin-button {
+  @apply bg-[#0077b5] text-white hover:bg-[#0069a0] font-medium text-sm flex items-center px-3 py-1 rounded-md transition-colors duration-200;
+}
+
+/* Category badge styles */
+.category-badge {
+  @apply px-3 py-1 rounded-full text-xs font-semibold;
+}
+
+.category-badge.artificial-intelligence,
+.category-badge.developer-tools {
+  @apply bg-orange-100 text-orange-800 border border-orange-200;
 }
 
 /* Line clamp for consistent card heights */
 .line-clamp-3 {
   display: -webkit-box;
   -webkit-line-clamp: 3;
-  -webkit-box-orient: vertical;  
+  -webkit-box-orient: vertical;
   overflow: hidden;
 }
 
 .line-clamp-4 {
   display: -webkit-box;
   -webkit-line-clamp: 4;
-  -webkit-box-orient: vertical;  
+  -webkit-box-orient: vertical;
   overflow: hidden;
+}
+
+/* Responsive Design */
+@media (max-width: 1024px) {
+  .product-card {
+    @apply p-4;
+  }
+
+  .product-card .card-footer {
+    @apply px-4 py-2;
+  }
+
+  .swipe-card-container {
+    @apply p-4;
+  }
+}
+
+@media (max-width: 768px) {
+  .product-card {
+    @apply p-4;
+    height: 450px;
+    min-height: 450px;
+    max-height: 450px;
+  }
+
+  .product-card .card-footer {
+    @apply px-4 py-2;
+  }
+
+  .swipe-card-container {
+    height: 450px;
+    min-height: 450px;
+    max-height: 450px;
+  }
+}
+
+@media (max-width: 480px) {
+  .product-card-container {
+    height: 350px;
+    min-height: 350px;
+    max-height: 350px;
+    margin: 0 auto 1.5rem auto;
+    width: 95%;
+  }
+  
+  .product-card {
+    @apply p-3;
+    height: auto;
+    min-height: 350px;
+  }
+
+  .product-card .card-header img, .product-card .card-header .no-image {
+    @apply w-7 h-7;
+  }
+
+  .product-card .card-header h3 {
+    @apply text-base;
+  }
+
+  .product-card .card-footer {
+    @apply px-3 py-2;
+  }
+
+  .text-sm {
+    @apply text-xs;
+  }
+
+  .upvote-badge {
+    @apply w-8 h-8;
+  }
+
+  .upvote-badge svg {
+    @apply w-4 h-4;
+  }
+
+  .upvote-badge span {
+    @apply text-xs;
+  }
+  
+  .product-list .grid {
+    gap: 0;
+  }
 }

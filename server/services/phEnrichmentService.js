@@ -68,6 +68,7 @@ class PhEnrichmentService {
       // Extract day rank
       let phDayRank = null;
       const rankSelectors = [
+        '[data-sentry-component="CategoryTags"] a[href*="/categories/"]',
         '[data-test="header"] div:contains("#")',
         '[data-test="product-rank"]',
         '.styles_rankNumber__3m4Vq',
@@ -208,10 +209,10 @@ class PhEnrichmentService {
       // Extract LinkedIn URL with validation
       let linkedinUrl = null;
       const linkedinSelectors = [
-        '[data-sentry-component="SocialLinks"] a[href*="linkedin.com"]',
+        '[data-sentry-component="SocialLinks"] a[href*="linkedin.com/in/"]',
         '.social-link--linkedin',
         '[data-test="linkedin-link"]',
-        'a[href*="linkedin.com"]'
+        'a[href*="linkedin.com/in/"]'
       ];
       for (const selector of linkedinSelectors) {
         const linkedinElement = root.querySelector(selector);
@@ -237,9 +238,45 @@ class PhEnrichmentService {
         const githubElement = root.querySelector(selector);
         if (githubElement) {
           const href = githubElement.getAttribute('href');
-          if (href && href.includes('github.com') && !href.includes('login')) {
+          if (href && href.includes('github.com') && !href.includes('login') && !href.includes('producthunt.com')) {
             phGithub = href.split('?')[0];
             console.log(`Found GitHub for ${product.name}: ${phGithub} (Selector: ${selector})`);
+            break;
+          }
+        }
+      }
+
+      // Extract product thumbnail image
+      let thumbnail = null;
+      const thumbnailSelectors = [
+        'meta[property="og:image"]',
+        'meta[name="twitter:image"]',
+        '[data-test="thumbnail"] img',
+        '[data-sentry-component="Header"] img',
+        '.styles_thumbnail__1Pg2J img',
+        '.thumbnail img',
+        '[class*="thumbnail"] img',
+        '[class*="logo"] img',
+        'img[src*="ph-files.imgix.net"]',
+        'img[src*="producthunt"][src*="image"]'
+      ];
+      for (const selector of thumbnailSelectors) {
+        const thumbnailElement = root.querySelector(selector);
+        if (thumbnailElement) {
+          let src = thumbnailElement.getAttribute('content') || thumbnailElement.getAttribute('src');
+          if (src && src.startsWith('http')) {
+            // Prefer the highest resolution from srcset if available
+            const srcset = thumbnailElement.getAttribute('srcset');
+            if (srcset) {
+              const sources = srcset.split(',').map(s => s.trim().split(' '));
+              const highestRes = sources.reduce((max, [url, res]) => {
+                const resNum = parseInt(res) || 1;
+                return resNum > max.res ? {url, res: resNum} : max;
+              }, {url: src, res: 1});
+              src = highestRes.url;
+            }
+            thumbnail = { url: src };
+            console.log(`Found thumbnail for ${product.name}: ${src} (Selector: ${selector})`);
             break;
           }
         }
@@ -255,6 +292,7 @@ class PhEnrichmentService {
         accelerator: accelerator || product.accelerator || null,
         linkedin: linkedinUrl || product.linkedin || null,
         phGithub: phGithub || product.phGithub || null,
+        thumbnail: thumbnail || product.thumbnail || null,
         phEnrichedAt: new Date().toISOString()
       };
 
@@ -297,7 +335,8 @@ class PhEnrichmentService {
         updatedProduct.launchDate !== product.launchDate ||
         updatedProduct.accelerator !== product.accelerator ||
         updatedProduct.linkedin !== product.linkedin ||
-        updatedProduct.phGithub !== product.phGithub
+        updatedProduct.phGithub !== product.phGithub ||
+        (updatedProduct.thumbnail?.url !== product.thumbnail?.url)
       )) {
         enrichedCount++;
         console.log(`Product updated: ${product.name}`);
