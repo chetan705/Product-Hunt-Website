@@ -78,7 +78,7 @@ class GoogleSheetsService {
           console.error('3. Set GOOGLE_SERVICE_ACCOUNT_KEY with full JSON credentials');
           console.error('');
           console.error('📋 For detailed setup instructions, see: GOOGLE_SHEETS_SETUP_COMPLETE.md');
-          console.error('Error details:', envError.message);
+          console.error('Error details:', envError.message || envError);
           return false;
         }
       }
@@ -105,7 +105,7 @@ class GoogleSheetsService {
       console.log('✓ Google Sheets service initialized successfully');
       return true;
     } catch (error) {
-      console.error('✗ Failed to initialize Google Sheets service:', error.message);
+      console.error('✗ Failed to initialize Google Sheets service:', error.message || error);
       console.error('Stack trace:', error.stack);
       return false;
     }
@@ -122,7 +122,7 @@ class GoogleSheetsService {
       console.log(`Connected to Google Sheet: ${response.data.properties.title}`);
       return true;
     } catch (error) {
-      throw new Error(`Failed to connect to Google Sheet: ${error.message}`);
+      throw new Error(`Failed to connect to Google Sheet: ${error.message || error}`);
     }
   }
 
@@ -136,28 +136,47 @@ class GoogleSheetsService {
         if (!success) return false;
       }
 
-      // Define the expected headers
+      // Define the expected headers to match all fields displayed on dashboard cards
       const headers = [
         'Date Approved',
-        'Maker Name', 
+        'Maker Name',
         'LinkedIn',
         'Product Name',
         'Category',
-        'Product Hunt Link'
+        'Product Hunt Link',
+        'Description',
+        'GitHub',
+        'Upvotes',
+        'Status',
+        'Company Information',
+        'Operating Status',
+        'Regions',
+        'Founded Year',
+        'Founders',
+        'Founder Count',
+        'Employee Count',
+        'Employee Count Range',
+        'HQ City',
+        'HQ State',
+        'HQ Country',
+        'Phone',
+        'Email',
+        'Growth Stage',
+        'Founder Info'
       ];
 
       // Check if sheet exists and has headers
       try {
         const response = await this.sheets.spreadsheets.values.get({
           spreadsheetId: this.spreadsheetId,
-          range: `${this.sheetName}!A1:F1`
+          range: `${this.sheetName}!A1:W1` // Updated to A:W for 23 columns
         });
 
         if (!response.data.values || response.data.values.length === 0) {
           // No headers exist, add them
           await this.sheets.spreadsheets.values.update({
             spreadsheetId: this.spreadsheetId,
-            range: `${this.sheetName}!A1:F1`,
+            range: `${this.sheetName}!A1:W1`,
             valueInputOption: 'RAW',
             resource: {
               values: [headers]
@@ -172,7 +191,7 @@ class GoogleSheetsService {
           // Add headers to the new sheet
           await this.sheets.spreadsheets.values.update({
             spreadsheetId: this.spreadsheetId,
-            range: `${this.sheetName}!A1:F1`,
+            range: `${this.sheetName}!A1:W1`,
             valueInputOption: 'RAW',
             resource: {
               values: [headers]
@@ -186,7 +205,7 @@ class GoogleSheetsService {
 
       return true;
     } catch (error) {
-      console.error('Error ensuring header row:', error.message);
+      console.error('Error ensuring header row:', error.message || error);
       return false;
     }
   }
@@ -225,13 +244,23 @@ class GoogleSheetsService {
     try {
       if (!this.initialized) {
         const success = await this.initialize();
-        if (!success) return false;
+        if (!success) {
+          console.warn('Google Sheets not initialized, cannot check for duplicates');
+          return false;
+        }
+      }
+
+      // Ensure headers exist before checking for duplicates
+      const headerSuccess = await this.ensureHeaderRow();
+      if (!headerSuccess) {
+        console.warn('Failed to ensure header row, cannot check for duplicates');
+        return false;
       }
 
       // Get all data from the sheet
       const response = await this.sheets.spreadsheets.values.get({
         spreadsheetId: this.spreadsheetId,
-        range: `${this.sheetName}!A:F`
+        range: `${this.sheetName}!A:W` // Updated to A:W for 23 columns
       });
 
       if (!response.data.values || response.data.values.length <= 1) {
@@ -244,7 +273,13 @@ class GoogleSheetsService {
       // Check for duplicates (skip header row)
       const rows = response.data.values.slice(1);
       for (const row of rows) {
-        const [, existingMakerName, , existingProductName, , existingPhLink] = row;
+        // Ensure row has enough columns to avoid undefined errors
+        if (row.length < 6) {
+          console.warn('Invalid row data, skipping:', row);
+          continue;
+        }
+
+        const [, existingMakerName = '', , existingProductName = '', , existingPhLink = ''] = row;
         
         // Check by name match
         const nameMatch = existingProductName === productName && existingMakerName === makerName;
@@ -256,13 +291,14 @@ class GoogleSheetsService {
         }
         
         if (nameMatch || linkMatch) {
+          console.log(`Duplicate found: ${productName} by ${makerName}`);
           return true; // Duplicate found
         }
       }
 
       return false; // No duplicate found
     } catch (error) {
-      console.error('Error checking for duplicates:', error.message);
+      console.error('Error checking for duplicates:', error.message || error, error);
       return false; // Assume no duplicate on error to allow the addition
     }
   }
@@ -280,7 +316,7 @@ class GoogleSheetsService {
       const parsedUrl = new URL(url);
       return parsedUrl.origin + parsedUrl.pathname.replace(/\/$/, '');
     } catch (error) {
-      console.warn(`Failed to normalize URL: ${url}`, error.message);
+      console.warn(`Failed to normalize URL: ${url}`, error.message || error);
       return url;
     }
   }
@@ -313,20 +349,50 @@ class GoogleSheetsService {
         return true; // Return success to avoid retries
       }
 
-      // Prepare the row data
+      // Extract company information (description only, excluding GitHub and launch date)
+      const companyInfoParts = (productData.companyInfo || '').split('–');
+      const companyDescription = companyInfoParts[0].trim() || '';
+
+      // Format founder info as a string
+      const founderInfo = productData.linkedInData?.founder_info
+        ? productData.linkedInData.founder_info
+            .map(info => `${info.full_name}: ${info.title} (${info.departments?.join(', ') || 'N/A'})`)
+            .join(', ')
+        : '';
+
+      // Prepare the row data to match headers
       const rowData = [
-        new Date().toISOString().split('T')[0], // Date Approved (YYYY-MM-DD format)
+        new Date().toISOString().split('T')[0], // Date Approved (YYYY-MM-DD)
         productData.makerName || 'Unknown',
         productData.linkedin || '',
         productData.name || '',
         productData.category || '',
-        productData.phLink || ''
+        productData.phLink || '',
+        productData.description || '',
+        productData.phGithub || '',
+        productData.upvotes?.toString() || '0',
+        productData.status || '',
+        companyDescription,
+        productData.linkedInData?.operating_status || 'N/A',
+        productData.linkedInData?.regions?.join(', ') || 'N/A',
+        productData.linkedInData?.founded_year?.toString() || 'N/A',
+        productData.linkedInData?.founders?.join(', ') || 'N/A',
+        productData.linkedInData?.founder_count?.toString() || 'N/A',
+        productData.linkedInData?.employee_count?.toString() || 'N/A',
+        productData.linkedInData?.employee_count_range || 'N/A',
+        productData.linkedInData?.city || 'N/A',
+        productData.linkedInData?.state || 'N/A',
+        productData.linkedInData?.country || 'N/A',
+        productData.linkedInData?.phone_number || 'N/A',
+        productData.linkedInData?.email || 'N/A',
+        productData.linkedInData?.growth_stage || 'N/A',
+        founderInfo
       ];
 
       // Append the row to the sheet
       await this.sheets.spreadsheets.values.append({
         spreadsheetId: this.spreadsheetId,
-        range: `${this.sheetName}!A:F`,
+        range: `${this.sheetName}!A:W`, // Updated to A:W for 23 columns
         valueInputOption: 'RAW',
         insertDataOption: 'INSERT_ROWS',
         resource: {
@@ -337,7 +403,7 @@ class GoogleSheetsService {
       console.log(`Added approved maker to Google Sheet: ${productData.name} by ${productData.makerName}`);
       return true;
     } catch (error) {
-      console.error('Error adding approved maker to Google Sheet:', error.message);
+      console.error('Error adding approved maker to Google Sheet:', error.message || error);
       throw error;
     }
   }
@@ -359,7 +425,7 @@ class GoogleSheetsService {
 
       const response = await this.sheets.spreadsheets.values.get({
         spreadsheetId: this.spreadsheetId,
-        range: `${this.sheetName}!A:F`
+        range: `${this.sheetName}!A:W` // Updated to A:W for 23 columns
       });
 
       const totalRows = response.data.values ? response.data.values.length - 1 : 0; // Subtract header row
@@ -372,9 +438,10 @@ class GoogleSheetsService {
         lastUpdate: new Date().toISOString()
       };
     } catch (error) {
+      console.error('Error getting sync status:', error.message || error);
       return {
         available: false,
-        error: error.message
+        error: error.message || String(error)
       };
     }
   }

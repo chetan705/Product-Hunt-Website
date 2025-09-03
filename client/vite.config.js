@@ -12,6 +12,12 @@ export default defineConfig({
         target: 'http://localhost:5000',
         changeOrigin: true,
         secure: false
+      },
+      '/linkedin-api': {
+        target: 'https://api.tryspecter.com',
+        changeOrigin: true,
+        secure: true,
+        rewrite: (path) => path.replace(/^\/linkedin-api/, '')
       }
     }
   },

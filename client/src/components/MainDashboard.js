@@ -1,4 +1,3 @@
-// MainDashboard.js (updated full code)
 import React, { useState, useEffect } from 'react';
 import ProductList from './ProductList';
 
@@ -12,7 +11,6 @@ const MainDashboard = () => {
   const [message, setMessage] = useState(null);
   const [selectedCategory, setSelectedCategory] = useState('all');
   const [selectedStatus, setSelectedStatus] = useState('all');
-  // Default initial sort by rank: upvotes desc, then newest
   const [selectedSort, setSelectedSort] = useState('rank'); // 'rank' | 'top50' | 'newest' | 'oldest' | 'linkedin-enriched'
   const [isEnrichingLinkedIn, setIsEnrichingLinkedIn] = useState(false);
 
@@ -119,27 +117,37 @@ const MainDashboard = () => {
       });
       if (filtered.length > 50) filtered = filtered.slice(0, 50);
     } else if (selectedSort === 'linkedin-enriched') {
-      // Filter products that have LinkedIn URLs that are not Product Hunt LinkedIn URLs
+      // Filter products that have valid LinkedIn company URLs
       filtered = filtered.filter(product => {
         return product.linkedin && 
                typeof product.linkedin === 'string' && 
-               product.linkedin.includes('linkedin.com') && 
-               !product.linkedin.includes('producthunt.com');
+               product.linkedin.includes('linkedin.com/company/') && 
+               !product.linkedin.includes('producthunt.com') &&
+               product.linkedin !== "https://www.linkedin.com/company/producthunt";
       });
       
-      // Randomly select 20 products if there are more than 20
-      if (filtered.length > 20) {
-        // Shuffle array using Fisher-Yates algorithm
-        for (let i = filtered.length - 1; i > 0; i--) {
-          const j = Math.floor(Math.random() * (i + 1));
-          [filtered[i], filtered[j]] = [filtered[j], filtered[i]];
+      // Sort by upvotes descending
+      filtered.sort((a, b) => {
+        const votesA = a.upvotes || 0;
+        const votesB = b.upvotes || 0;
+        return votesB - votesA;
+      });
+      
+      // Select top 10 products with valid LinkedIn URLs
+      const top10 = [];
+      for (const product of filtered) {
+        if (product.linkedin && 
+            product.linkedin.includes('linkedin.com/company/') && 
+            product.linkedin !== "https://www.linkedin.com/company/producthunt") {
+          top10.push(product);
         }
-        filtered = filtered.slice(0, 20);
+        if (top10.length === 10) break;
       }
+      filtered = top10;
     } else if (selectedSort === 'newest') {
       filtered.sort((a, b) => new Date(b.createdAt || b.publishedAt) - new Date(a.createdAt || a.publishedAt));
     } else if (selectedSort === 'oldest') {
-      filtered.sort((a, b) => new Date(a.createdAt || a.publishedAt) - new Date(b.createdAt || a.publishedAt));
+      filtered.sort((a, b) => new Date(a.createdAt || a.publishedAt) - new Date(b.createdAt || b.publishedAt));
     }
 
     // Compute "Launched this week" for each filtered product
@@ -218,80 +226,106 @@ const MainDashboard = () => {
   };
 
   const handleEnrichLinkedIn = async () => {
-    try {
-      setIsEnrichingLinkedIn(true);
-      setError(null);
-      setMessage(null);
+    if (selectedSort !== 'linkedin-enriched' || filteredProducts.length === 0) return;
+    
+    setIsEnrichingLinkedIn(true);
+    setError(null);
+    setMessage(null);
 
-      // Get the filtered products with LinkedIn profiles
-      let linkedInProducts = [...products].filter(product => {
-        return product.linkedin && 
-               typeof product.linkedin === 'string' && 
-               product.linkedin.includes('linkedin.com') && 
-               !product.linkedin.includes('producthunt.com');
-      });
-      
-      // Randomly select 20 products if there are more than 20
-      if (linkedInProducts.length > 20) {
-        // Shuffle array using Fisher-Yates algorithm
-        for (let i = linkedInProducts.length - 1; i > 0; i--) {
-          const j = Math.floor(Math.random() * (i + 1));
-          [linkedInProducts[i], linkedInProducts[j]] = [linkedInProducts[j], linkedInProducts[i]];
-        }
-        linkedInProducts = linkedInProducts.slice(0, 20);
-      }
+    const API_URL = '/api/linkedin/companies';
 
-      // For each product, fetch LinkedIn profile data from Specter API
-      const enrichedProducts = [];
-      for (const product of linkedInProducts) {
-        try {
-          // In a real implementation, this would be an actual API call to Specter
-          // For this example, we'll simulate the API response
-          const mockResponse = {
-            profile_picture_url: "https://peopledb-public.s3.eu-west-2.amazonaws.com/assets/profile-pictures/per_7f8d9e2a1b3c4d5e6f7g8h9i0.jpg",
-            full_name: product.makerName || "Product Maker",
-            linkedin_url: product.linkedin,
-            about: "AI/ML researcher and entrepreneur with a focus on computer vision applications.",
-            tagline: "AI Researcher | Founder",
-            location: "San Francisco, California, United States"
-          };
-          
-          // Update the product with enriched LinkedIn data
-          const enrichedProduct = {
-            ...product,
-            linkedInEnriched: true,
-            linkedInData: mockResponse
-          };
-          
-          enrichedProducts.push(enrichedProduct);
-        } catch (error) {
-          console.error(`Error enriching LinkedIn data for product ${product.id}:`, error);
-        }
-      }
+    const enrichedProducts = [];
+    const errors = [];
 
-      // Update the products state with the enriched products
-      const updatedProducts = [...products];
-      for (const enrichedProduct of enrichedProducts) {
-        const index = updatedProducts.findIndex(p => p.id === enrichedProduct.id);
-        if (index !== -1) {
-          updatedProducts[index] = enrichedProduct;
+    for (const product of filteredProducts) {
+      try {
+        // Validate LinkedIn URL format before sending to API
+        if (!product.linkedin || !product.linkedin.includes('linkedin.com/company/')) {
+          console.warn(`Skipping invalid LinkedIn URL for ${product.name}: ${product.linkedin}`);
+          errors.push(product.name);
+          continue;
         }
+
+        console.log(`Enriching ${product.name} with LinkedIn URL: ${product.linkedin}`);
+        
+        const response = await fetch(API_URL, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            linkedin_url: product.linkedin
+          })
+        });
+
+        if (!response.ok) {
+          const errorData = await response.json().catch(() => ({}));
+          console.error(`API error for ${product.name}:`, errorData);
+          throw new Error(`HTTP ${response.status}: Failed to enrich ${product.name}`);
+        }
+
+        const data = await response.json();
+        const companyData = data[0]; // Specter returns an array; take the first item
+        if (!companyData) {
+          console.warn(`No enrichment data returned for ${product.name}`);
+          errors.push(product.name);
+          continue; // Skip without throwing, to continue with others
+        }
+        
+        console.log(`Successfully enriched ${product.name}:`, companyData);
+        const extracted = {
+          operating_status: companyData.operating_status,
+          regions: companyData.regions,
+          founded_year: companyData.founded_year,
+          founders: companyData.founders,
+          founder_info: companyData.founder_info,
+          founder_count: companyData.founder_count,
+          employee_count: companyData.employee_count,
+          employee_count_range: companyData.employee_count_range,
+          city: companyData.hq?.city,
+          state: companyData.hq?.state,
+          country: companyData.hq?.country,
+          phone_number: companyData.contact?.phone_number,
+          email: companyData.contact?.email,
+          growth_stage: companyData.growth_stage
+        };
+
+        enrichedProducts.push({
+          ...product,
+          linkedInEnriched: true,
+          linkedInData: extracted
+        });
+
+        // Add delay to avoid rate limiting (1 second between calls)
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      } catch (err) {
+        console.error(`Error enriching ${product.name}:`, err.message);
+        errors.push(product.name);
       }
-      
-      setProducts(updatedProducts);
-      setSelectedSort('linkedin-enriched');
-      
+    }
+
+    // Update products state
+    const updatedProducts = [...products];
+    enrichedProducts.forEach(enriched => {
+      const index = updatedProducts.findIndex(p => p.id === enriched.id);
+      if (index !== -1) {
+        updatedProducts[index] = enriched;
+      }
+    });
+
+    setProducts(updatedProducts);
+    filterProducts(); // Re-filter to update display
+
+    if (errors.length > 0) {
+      setError(`Failed to enrich ${errors.length} products: ${errors.join(', ')}`);
+    } else {
       setMessage({
         type: 'success',
         text: `LinkedIn enrichment completed for ${enrichedProducts.length} products!`
       });
-      
-    } catch (err) {
-      setError('Failed to enrich LinkedIn profiles');
-      console.error('Error enriching LinkedIn profiles:', err);
-    } finally {
-      setIsEnrichingLinkedIn(false);
     }
+    
+    setIsEnrichingLinkedIn(false);
   };
 
   const formatDate = (dateString) => {

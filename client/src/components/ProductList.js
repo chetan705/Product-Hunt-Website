@@ -1,6 +1,5 @@
 import React, { useState } from 'react';
 import PropTypes from 'prop-types';
-import TinderCard from 'react-tinder-card';
 
 function ProductList({ products, selectedCategory, selectedStatus }) {
   if (!products || products.length === 0) {
@@ -30,10 +29,10 @@ function ProductList({ products, selectedCategory, selectedStatus }) {
       </div>
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
         {products.map((product) => (
-            <div key={product.id} className="product-card-container">
-              <ProductCard product={product} />
-            </div>
-          ))}
+          <div key={product.id} className="product-card-container">
+            <ProductCard product={product} />
+          </div>
+        ))}
       </div>
     </div>
   );
@@ -99,7 +98,7 @@ function ProductCard({ product }) {
         localStorage.setItem('phf_voted', JSON.stringify(voted));
       }
     } catch (error) {
-      console.error('Vote toggle error:', error.message);
+      console.error('Vote toggle error:', error.message || error);
     } finally {
       setIsUpvoting(false);
     }
@@ -253,6 +252,43 @@ function ProductCard({ product }) {
           View on Product Hunt
         </a>
       </div>
+      {product.linkedInData && (
+        <div className="py-2 bg-blue-50 border border-blue-100 rounded-lg shadow-sm">
+          <h4 className="text-sm font-semibold text-gray-900 mb-2 flex items-center px-4">
+            <svg className="w-4 h-4 mr-2 text-blue-500" fill="currentColor" viewBox="0 0 24 24">
+              <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/>
+            </svg>
+            Enriched Data
+          </h4>
+          <div className="space-y-1 px-4 text-sm text-gray-700">
+            <p>Operating Status: {product.linkedInData.operating_status || 'N/A'}</p>
+            <p>Regions: {product.linkedInData.regions?.join(', ') || 'N/A'}</p>
+            <p>Founded Year: {product.linkedInData.founded_year || 'N/A'}</p>
+            <p>Founders: {product.linkedInData.founders?.join(', ') || 'N/A'}</p>
+            <p>Founder Count: {product.linkedInData.founder_count || 'N/A'}</p>
+            <p>Employee Count: {product.linkedInData.employee_count || 'N/A'}</p>
+            <p>Employee Range: {product.linkedInData.employee_count_range || 'N/A'}</p>
+            {(product.linkedInData.city || product.linkedInData.state || product.linkedInData.country) && (
+              <p>
+                HQ: {(product.linkedInData.city || product.linkedInData.state || product.linkedInData.country)
+                  ? `${product.linkedInData.city || ''}${product.linkedInData.city && product.linkedInData.state ? ', ' : ''}${product.linkedInData.state || ''}${product.linkedInData.state && product.linkedInData.country ? ', ' : ''}${product.linkedInData.country || ''}`
+                  : 'N/A'}
+              </p>
+            )}
+            <p>Phone: {product.linkedInData.phone_number || 'N/A'}</p>
+            <p>Email: {product.linkedInData.email || 'N/A'}</p>
+            <p>Growth Stage: {product.linkedInData.growth_stage || 'N/A'}</p>
+            {product.linkedInData.founder_info && product.linkedInData.founder_info.length > 0 && (
+              <div>
+                <p>Founder Info:</p>
+                {product.linkedInData.founder_info.map((info, idx) => (
+                  <p key={idx}> - {info.full_name}: {info.title} ({info.departments?.join(', ') || 'N/A'})</p>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
