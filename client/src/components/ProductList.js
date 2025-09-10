@@ -1,7 +1,29 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import PropTypes from 'prop-types';
+import { useSwipeable } from 'react-swipeable';
 
-function ProductList({ products, selectedCategory, selectedStatus }) {
+function ProductList({ products, selectedCategory, selectedStatus, selectedSort, formatDate, onEnrich }) {
+  const [currentCardIndex, setCurrentCardIndex] = useState(0);
+  const [isMobile, setIsMobile] = useState(false);
+
+  // Check for mobile view
+  useEffect(() => {
+    const checkMobile = () => setIsMobile(window.innerWidth <= 768);
+    checkMobile();
+    window.addEventListener('resize', checkMobile);
+    return () => window.removeEventListener('resize', checkMobile);
+  }, []);
+
+  // Handle next card after swipe
+  const handleNextCard = () => {
+    setCurrentCardIndex(prevIndex => {
+      if (prevIndex >= products.length - 1) {
+        return 0; // Loop back
+      }
+      return prevIndex + 1;
+    });
+  };
+
   if (!products || products.length === 0) {
     return (
       <div className="text-center py-16">
@@ -27,10 +49,18 @@ function ProductList({ products, selectedCategory, selectedStatus }) {
         </h2>
         <p className="text-gray-600">Showing {products.length} product{products.length !== 1 ? 's' : ''}</p>
       </div>
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
-        {products.map((product) => (
-          <div key={product.id} className="product-card-container">
-            <ProductCard product={product} />
+      <div className={`${isMobile ? 'relative min-h-[500px]' : 'grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6'}`}>
+        {products.map((product, index) => (
+          <div 
+            key={product.id} 
+            className={`${isMobile ? `absolute top-0 left-0 right-0 ${index === currentCardIndex ? 'block' : 'hidden'}` : ''}`}
+          >
+            <ProductCard 
+              product={product} 
+              formatDate={formatDate} 
+              onEnrich={onEnrich}
+              onSwipeComplete={isMobile ? handleNextCard : undefined}
+            />
           </div>
         ))}
       </div>
@@ -38,9 +68,12 @@ function ProductList({ products, selectedCategory, selectedStatus }) {
   );
 }
 
-function ProductCard({ product }) {
+function ProductCard({ product, formatDate, onEnrich, onSwipeComplete }) {
   const [upvotes, setUpvotes] = useState(product.upvotes || 0);
   const [isUpvoting, setIsUpvoting] = useState(false);
+  const [isEnriching, setIsEnriching] = useState(false);
+  const [enrichError, setEnrichError] = useState(null);
+  const [enrichedData, setEnrichedData] = useState(product.linkedInData || null);
   const [hasVoted, setHasVoted] = useState(() => {
     try {
       const voted = JSON.parse(localStorage.getItem('phf_voted') || '{}');
@@ -49,6 +82,10 @@ function ProductCard({ product }) {
       return false;
     }
   });
+  
+  // For mobile swipe functionality
+  const [swipeDirection, setSwipeDirection] = useState(null);
+  const [swipeAction, setSwipeAction] = useState(null);
 
   const getCategoryDisplayName = (category) => {
     return category
@@ -106,12 +143,219 @@ function ProductCard({ product }) {
 
   const isValidLinkedInUrl = product.linkedin &&
     typeof product.linkedin === 'string' &&
-    product.linkedin.includes('linkedin.com') &&
-    !product.linkedin.includes('producthunt.com');
+    product.linkedin.includes('linkedin.com/company/') &&
+    product.linkedin !== 'https://www.linkedin.com/company/producthunt';
+
+  const handleEnrichLinkedIn = async () => {
+    if (!isValidLinkedInUrl || isEnriching) return;
+    
+    setIsEnriching(true);
+    setEnrichError(null);
+    
+    try {
+      const API_URL = '/api/linkedin/companies';
+      
+      const response = await fetch(API_URL, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ linkedin_url: product.linkedin })
+      });
+      
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`API error: ${response.status} - ${errorText}`);
+      }
+      
+      const data = await response.json();
+      const companyData = data[0];
+      
+      if (!companyData) {
+        throw new Error('No enrichment data returned');
+      }
+      
+      const extracted = {
+        operating_status: companyData.operating_status,
+        regions: companyData.regions,
+        founded_year: companyData.founded_year,
+        founders: companyData.founders,
+        founder_info: companyData.founder_info,
+        founder_count: companyData.founder_count,
+        employee_count: companyData.employee_count,
+        employee_count_range: companyData.employee_count_range,
+        city: companyData.hq?.city,
+        state: companyData.hq?.state,
+        country: companyData.hq?.country,
+        phone_number: companyData.contact?.phone_number,
+        email: companyData.contact?.email,
+        growth_stage: companyData.growth_stage
+      };
+      
+      // Persist to backend
+      const persistResponse = await fetch(`/api/products/${product.id}`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ linkedInData: extracted })
+      });
+      
+      if (!persistResponse.ok) {
+        console.error('Failed to persist enriched data');
+      }
+      
+      setEnrichedData(extracted);
+      if (onEnrich) {
+        onEnrich(product.id, extracted);
+      }
+      
+      // If swipe triggered, handle animation
+      if (swipeDirection === 'up') {
+        setSwipeAction('enriched');
+        setTimeout(() => {
+          setSwipeDirection(null);
+          setSwipeAction(null);
+          if (onSwipeComplete) onSwipeComplete();
+        }, 1000);
+      }
+    } catch (error) {
+      console.error('LinkedIn enrichment error:', error);
+      setEnrichError(error.message);
+      
+      if (swipeDirection === 'up') {
+        setSwipeAction('error');
+        setTimeout(() => {
+          setSwipeDirection(null);
+          setSwipeAction(null);
+          if (onSwipeComplete) onSwipeComplete();
+        }, 1000);
+      }
+    } finally {
+      setIsEnriching(false);
+    }
+  };
+
+  // Handle swipe gestures
+  const handleSwipe = (direction) => {
+    setSwipeDirection(direction);
+    if (direction === 'up' && isValidLinkedInUrl && !isEnriching) {
+      handleEnrichLinkedIn();
+    } else if (direction === 'left') {
+      setSwipeAction('reject');
+      updateProductStatus('rejected');
+      setTimeout(() => {
+        setSwipeDirection(null);
+        setSwipeAction(null);
+        if (onSwipeComplete) onSwipeComplete();
+      }, 1000);
+    } else if (direction === 'right') {
+      setSwipeAction('accept');
+      updateProductStatus('approved');
+      setTimeout(() => {
+        setSwipeDirection(null);
+        setSwipeAction(null);
+        if (onSwipeComplete) onSwipeComplete();
+      }, 1000);
+    }
+  };
+
+  // Function to update product status
+  const updateProductStatus = async (status) => {
+    try {
+      const response = await fetch(`/api/products/${product.id}`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ status })
+      });
+      
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error(`Failed to update product status: ${errorText}`);
+      }
+    } catch (error) {
+      console.error('Error updating product status:', error);
+    }
+  };
+
+  const swipeHandlers = useSwipeable({
+    onSwipedUp: () => handleSwipe('up'),
+    onSwipedLeft: () => handleSwipe('left'),
+    onSwipedRight: () => handleSwipe('right'),
+    preventDefaultTouchmoveEvent: true,
+    trackMouse: false
+  });
+
+  const getSwipeCardStyle = () => {
+    if (swipeDirection) {
+      if (swipeDirection === 'up') {
+        return {
+          transform: 'translateY(-100vh)',
+          opacity: 0,
+          transition: 'transform 0.5s ease, opacity 0.5s ease'
+        };
+      } else if (swipeDirection === 'left') {
+        return {
+          transform: 'translateX(-120vw) rotate(-30deg)',
+          opacity: 0,
+          transition: 'transform 0.5s ease, opacity 0.5s ease'
+        };
+      } else if (swipeDirection === 'right') {
+        return {
+          transform: 'translateX(120vw) rotate(30deg)',
+          opacity: 0,
+          transition: 'transform 0.5s ease, opacity 0.5s ease'
+        };
+      }
+    }
+    return {
+      transform: 'translateY(0) translateX(0) rotate(0deg)',
+      opacity: 1,
+      transition: 'transform 0.3s ease, opacity 0.3s ease'
+    };
+  };
+
+  const renderSwipeOverlay = () => {
+    if (!swipeAction) return null;
+    
+    let overlayClass = '';
+    let overlayText = '';
+    
+    if (swipeAction === 'enriched') {
+      overlayClass = 'enriched';
+      overlayText = '✅ LinkedIn Enriched';
+    } else if (swipeAction === 'error') {
+      overlayClass = 'error';
+      overlayText = '❌ Enrichment Failed';
+    } else if (swipeAction === 'accept') {
+      overlayClass = 'accept';
+      overlayText = '✓ Accepted';
+    } else if (swipeAction === 'reject') {
+      overlayClass = 'reject';
+      overlayText = '✕ Rejected';
+    }
+    
+    return (
+      <div className={`product-swipe-overlay ${overlayClass}`}>
+        <div className="text-white text-xl font-bold">
+          {overlayText}
+        </div>
+      </div>
+    );
+  };
+
+  const displayData = enrichedData || product.linkedInData;
 
   return (
-    <div className="product-card bg-gradient-to-br from-white to-[#fef7f5] rounded-xl shadow-md border border-gray-200 overflow-y-auto p-4 space-y-2 w-full h-full hover:shadow-lg transition-all duration-200">
-      <div className="card-header">
+    <div 
+      {...swipeHandlers}
+      className="product-card bg-gradient-to-br from-white to-[#fef7f5] rounded-xl shadow-md border border-gray-200 overflow-y-auto p-4 space-y-2 w-full h-full hover:shadow-lg transition-all duration-200"
+      style={getSwipeCardStyle()}
+    >
+      {renderSwipeOverlay()}
+      <div className="card-header relative">
         <div className="flex items-center gap-2 mb-2">
           {product.thumbnail?.url ? (
             <img
@@ -188,6 +432,45 @@ function ProductCard({ product }) {
           )}
         </div>
       </div>
+      
+      {/* LinkedIn Enriched Data Display */}
+      {displayData && (
+        <div className="py-2 bg-blue-50 border border-blue-100 rounded-lg shadow-sm">
+          <h4 className="text-sm font-semibold text-gray-900 mb-2 flex items-center px-4">
+            <svg className="w-4 h-4 mr-2 text-blue-500" fill="currentColor" viewBox="0 0 24 24">
+              <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/>
+            </svg>
+            Enriched Data
+          </h4>
+          <div className="space-y-1 px-4 text-sm text-gray-700 max-h-60 overflow-y-auto">
+            <p>Operating Status: {displayData.operating_status || 'N/A'}</p>
+            <p>Regions: {displayData.regions?.join(', ') || 'N/A'}</p>
+            <p>Founded Year: {displayData.founded_year || 'N/A'}</p>
+            <p>Founders: {displayData.founders?.join(', ') || 'N/A'}</p>
+            <p>Founder Count: {displayData.founder_count || 'N/A'}</p>
+            <p>Employee Count: {displayData.employee_count || 'N/A'}</p>
+            <p>Employee Range: {displayData.employee_count_range || 'N/A'}</p>
+            {(displayData.city || displayData.state || displayData.country) && (
+              <p>
+                HQ: {(displayData.city || displayData.state || displayData.country)
+                  ? `${displayData.city || ''}${displayData.city && displayData.state ? ', ' : ''}${displayData.state || ''}${displayData.state && displayData.country ? ', ' : ''}${displayData.country || ''}`
+                  : 'N/A'}
+              </p>
+            )}
+            <p>Phone: {displayData.phone_number || 'N/A'}</p>
+            <p>Email: {displayData.email || 'N/A'}</p>
+            <p>Growth Stage: {displayData.growth_stage || 'N/A'}</p>
+            {displayData.founder_info && displayData.founder_info.length > 0 && (
+              <div>
+                <p>Founder Info:</p>
+                {displayData.founder_info.map((info, idx) => (
+                  <p key={idx}> - {info.full_name}: {info.title} ({info.departments?.join(', ') || 'N/A'})</p>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
       <div className="px-4 py-2 bg-gray-50 border-b border-gray-200 rounded-md shadow-sm mt-2">
         <div className="flex items-center gap-4">
           {isValidLinkedInUrl && (
@@ -203,6 +486,15 @@ function ProductCard({ product }) {
               >
                 LinkedIn
               </a>
+              <button
+                onClick={handleEnrichLinkedIn}
+                disabled={isEnriching || !!displayData}
+                className={`ml-2 px-2 py-1 text-xs font-medium rounded-md shadow-sm ${!!displayData ? 'bg-green-100 text-green-700 cursor-default' : isEnriching ? 'bg-blue-100 text-blue-700 animate-pulse' : 'bg-blue-500 text-white hover:bg-blue-600'}`}
+                title={!!displayData ? 'Already enriched' : 'Enrich LinkedIn profile'}
+              >
+                {!!displayData ? '✓ Enriched' : isEnriching ? 'Enriching...' : 'Enrich LinkedIn'}
+              </button>
+              {enrichError && <span className="text-xs text-red-500 ml-2">{enrichError}</span>}
             </div>
           )}
           {product.phGithub && (
@@ -252,43 +544,6 @@ function ProductCard({ product }) {
           View on Product Hunt
         </a>
       </div>
-      {product.linkedInData && (
-        <div className="py-2 bg-blue-50 border border-blue-100 rounded-lg shadow-sm">
-          <h4 className="text-sm font-semibold text-gray-900 mb-2 flex items-center px-4">
-            <svg className="w-4 h-4 mr-2 text-blue-500" fill="currentColor" viewBox="0 0 24 24">
-              <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/>
-            </svg>
-            Enriched Data
-          </h4>
-          <div className="space-y-1 px-4 text-sm text-gray-700">
-            <p>Operating Status: {product.linkedInData.operating_status || 'N/A'}</p>
-            <p>Regions: {product.linkedInData.regions?.join(', ') || 'N/A'}</p>
-            <p>Founded Year: {product.linkedInData.founded_year || 'N/A'}</p>
-            <p>Founders: {product.linkedInData.founders?.join(', ') || 'N/A'}</p>
-            <p>Founder Count: {product.linkedInData.founder_count || 'N/A'}</p>
-            <p>Employee Count: {product.linkedInData.employee_count || 'N/A'}</p>
-            <p>Employee Range: {product.linkedInData.employee_count_range || 'N/A'}</p>
-            {(product.linkedInData.city || product.linkedInData.state || product.linkedInData.country) && (
-              <p>
-                HQ: {(product.linkedInData.city || product.linkedInData.state || product.linkedInData.country)
-                  ? `${product.linkedInData.city || ''}${product.linkedInData.city && product.linkedInData.state ? ', ' : ''}${product.linkedInData.state || ''}${product.linkedInData.state && product.linkedInData.country ? ', ' : ''}${product.linkedInData.country || ''}`
-                  : 'N/A'}
-              </p>
-            )}
-            <p>Phone: {product.linkedInData.phone_number || 'N/A'}</p>
-            <p>Email: {product.linkedInData.email || 'N/A'}</p>
-            <p>Growth Stage: {product.linkedInData.growth_stage || 'N/A'}</p>
-            {product.linkedInData.founder_info && product.linkedInData.founder_info.length > 0 && (
-              <div>
-                <p>Founder Info:</p>
-                {product.linkedInData.founder_info.map((info, idx) => (
-                  <p key={idx}> - {info.full_name}: {info.title} ({info.departments?.join(', ') || 'N/A'})</p>
-                ))}
-              </div>
-            )}
-          </div>
-        </div>
-      )}
     </div>
   );
 }
@@ -304,7 +559,6 @@ ProductList.propTypes = {
       upvotes: PropTypes.number,
       phTopics: PropTypes.arrayOf(PropTypes.string),
       dayRank: PropTypes.string,
-      votes: PropTypes.number,
       companyWebsite: PropTypes.string,
       companyInfo: PropTypes.string,
       launchDate: PropTypes.string,
@@ -314,13 +568,17 @@ ProductList.propTypes = {
       phGithub: PropTypes.string,
       phLink: PropTypes.string,
       productHuntLink: PropTypes.string,
+      linkedInData: PropTypes.object,
       thumbnail: PropTypes.shape({
         url: PropTypes.string
       })
     })
   ).isRequired,
-  selectedCategory: PropTypes.string.isRequired,
-  selectedStatus: PropTypes.string.isRequired
+  selectedCategory: PropTypes.string,
+  selectedStatus: PropTypes.string,
+  selectedSort: PropTypes.string,
+  formatDate: PropTypes.func,
+  onEnrich: PropTypes.func
 };
 
 ProductCard.propTypes = {
@@ -333,7 +591,6 @@ ProductCard.propTypes = {
     upvotes: PropTypes.number,
     phTopics: PropTypes.arrayOf(PropTypes.string),
     dayRank: PropTypes.string,
-    votes: PropTypes.number,
     companyWebsite: PropTypes.string,
     companyInfo: PropTypes.string,
     launchDate: PropTypes.string,
@@ -343,10 +600,14 @@ ProductCard.propTypes = {
     phGithub: PropTypes.string,
     phLink: PropTypes.string,
     productHuntLink: PropTypes.string,
+    linkedInData: PropTypes.object,
     thumbnail: PropTypes.shape({
       url: PropTypes.string
     })
-  }).isRequired
+  }).isRequired,
+  formatDate: PropTypes.func,
+  onEnrich: PropTypes.func,
+  onSwipeComplete: PropTypes.func
 };
 
 export default ProductList;
