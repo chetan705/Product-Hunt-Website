@@ -61,7 +61,7 @@ app.post('/api/linkedin/companies', async (req, res) => {
       return res.status(400).json({ error: 'LinkedIn URL is required' });
     }
     
-    const API_KEY = 'd6c0bfe4e7dab55384f8556b7c39e45aae439ce179fbb864b96545646b3577a4'; // Replace with valid key if this is invalid
+    const API_KEY = process.env.SPECTER_API_KEY || 'd6c0bfe4e7dab55384f8556b7c39e45aae439ce179fbb864b96545646b3577a4'; // Use env var if available
     
     console.log(`Enriching LinkedIn URL: ${linkedin_url}`);
     
@@ -73,11 +73,11 @@ app.post('/api/linkedin/companies', async (req, res) => {
       });
     }
     
-    const response = await fetch('https://app.tryspecter.com/api/v1/companies', { // Corrected URL (alternate: 'https://api.tryspecter.com/companies' if this fails)
+    const response = await fetch('https://app.tryspecter.com/api/v1/companies', { 
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'X-API-Key': API_KEY // Corrected header (no Bearer)
+        'X-API-Key': API_KEY 
       },
       body: JSON.stringify({ linkedin_url })
     });
@@ -143,6 +143,38 @@ app.get('/api/products', async (req, res) => {
       success: false,
       error: {
         message: 'Failed to fetch products',
+        details: error.message
+      }
+    });
+  }
+});
+
+// Update product fields (e.g., linkedInData, status, phVotes)
+app.patch('/api/products/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const fields = req.body;
+    const updated = await dbService.updateProductFields(id, fields);
+    
+    if (updated) {
+      res.json({
+        success: true,
+        product: updated
+      });
+    } else {
+      res.status(404).json({
+        success: false,
+        error: {
+          message: 'Product not found'
+        }
+      });
+    }
+  } catch (error) {
+    console.error('Error updating product:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        message: 'Failed to update product',
         details: error.message
       }
     });
@@ -609,6 +641,7 @@ app.get('/', (req, res) => {
       'POST /api/cron/fetch': 'Trigger RSS feed fetching for all categories (includes LinkedIn enrichment)',
       'POST /api/cron/fetch/:category': 'Trigger RSS feed fetching for specific category',
       'GET /api/products': 'Get all products (supports ?category and ?status filters)',
+      'PATCH /api/products/:id': 'Update product fields (e.g., linkedInData, status)',
       'GET /api/products/category/:category': 'Get products by category',
       'GET /api/makers': 'Get all makers (supports ?status filter) [AUTH REQUIRED]',
       'POST /api/makers/:id/approve': 'Approve a maker (auto-syncs to Google Sheets) [AUTH REQUIRED]',
@@ -727,29 +760,19 @@ app.listen(PORT, async () => {
   console.log('Available endpoints:');
   console.log(`• POST /api/cron/fetch - Trigger RSS fetch`);
   console.log(`• GET /api/products - Get all products`);
-  console.log(`• GET /api/stats - Get statistics`);
+  console.log(`• PATCH /api/products/:id - Update product fields`);
+  console.log(`• POST /api/products/:id/upvote - Upvote a product`);
+  console.log(`• POST /api/products/:id/unvote - Remove upvote from a product`);
+  console.log(`• GET /api/products/category/:category - Get products by category`);
+  console.log(`• GET /api/makers - Get makers (admin)`);
+  console.log(`• POST /api/makers/:id/approve - Approve a maker (admin)`);
+  console.log(`• POST /api/makers/:id/reject - Reject a maker (admin)`);
+  console.log(`• POST /api/cron/resync-sheets - Resync approved products to Google Sheets (admin)`);
+  console.log(`• GET /api/sheets/status - Get Google Sheets sync status`);
+  console.log(`• GET /api/debug/enriched - Get enriched products (debug)`);
+  console.log(`• GET /api/stats - Get database statistics`);
   console.log(`• GET /api/status - Get system status`);
   console.log(`• GET /api/health - Health check`);
-  console.log(`• GET /api/makers - Get makers [AUTH REQUIRED]`);
-  console.log('=================================');
-  
-  // Log RSS categories
-  const rssCategories = require('./config/rssCategories');
-  console.log('RSS Categories configured:');
-  rssCategories.forEach(category => console.log(`• ${category}`));
-  console.log('=================================');
-  
-  // Log authentication info
-  const authMethod = process.env.AUTH_METHOD || 'basic';
-  console.log('Authentication:');
-  console.log(`• Method: ${authMethod.toUpperCase()}`);
-  if (authMethod === 'basic') {
-    console.log(`• Username: ${process.env.ADMIN_USERNAME || 'admin'}`);
-    console.log(`• Password: ${process.env.ADMIN_PASSWORD ? '[SET]' : '[DEFAULT: admin123]'}`);
-  } else {
-    console.log(`• Token: ${process.env.ADMIN_TOKEN ? '[SET]' : '[DEFAULT: secure-admin-token-123]'}`);
-  }
-  console.log('=================================');
 });
 
 module.exports = app;
