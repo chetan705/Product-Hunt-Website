@@ -76,7 +76,7 @@ class CacheService {
   }
 
   /**
-   * Get keys matching a pattern (e.g., 'ph_enrichment_cache:*')
+   * Get keys matching a pattern (e.g., 'linkedin_cache:*')
    * @param {string} pattern - Pattern to match keys
    * @returns {Promise<string[]>} - Array of matching keys
    */
@@ -140,6 +140,27 @@ class CacheService {
   }
 
   /**
+   * Get LinkedIn-specific cache
+   * @param {string} makerName - Maker name
+   * @returns {Promise<string|null>} - Cached LinkedIn URL or null
+   */
+  async getLinkedInCache(makerName) {
+    const key = `linkedin_cache:${this.cleanKey(makerName)}`;
+    return await this.getItem(key);
+  }
+
+  /**
+   * Set LinkedIn-specific cache
+   * @param {string} makerName - Maker name
+   * @param {string|null} linkedinUrl - LinkedIn URL or null
+   * @returns {Promise<void>}
+   */
+  async setLinkedInCache(makerName, linkedinUrl) {
+    const key = `linkedin_cache:${this.cleanKey(makerName)}`;
+    await this.setItem(key, linkedinUrl, this.cacheExpiry);
+  }
+
+  /**
    * Clear all LinkedIn cache
    * @returns {Promise<Object>} - Clear results
    */
@@ -147,7 +168,7 @@ class CacheService {
     const results = {
       memoryCleared: 0,
       databaseCleared: 0,
-      errors: []
+      errors: [],
     };
 
     // Clear in-memory cache for LinkedIn
@@ -172,7 +193,9 @@ class CacheService {
       results.errors.push(`Failed to clear database cache: ${error.message}`);
     }
 
-    console.log(`LinkedIn cache cleared: ${results.memoryCleared} memory, ${results.databaseCleared} database`);
+    console.log(
+      `LinkedIn cache cleared: ${results.memoryCleared} memory, ${results.databaseCleared} database`
+    );
     return results;
   }
 
@@ -184,17 +207,17 @@ class CacheService {
     const stats = {
       inMemory: {
         size: this.inMemoryCache.size,
-        maxSize: this.maxInMemorySize
+        maxSize: this.maxInMemorySize,
       },
       database: {
         totalEntries: 0,
         validEntries: 0,
-        expiredEntries: 0
+        expiredEntries: 0,
       },
       settings: {
         expiryHours: this.cacheExpiry / (60 * 60 * 1000),
-        maxInMemorySize: this.maxInMemorySize
-      }
+        maxInMemorySize: this.maxInMemorySize,
+      },
     };
 
     try {
@@ -228,7 +251,7 @@ class CacheService {
     const results = {
       checked: 0,
       removed: 0,
-      errors: []
+      errors: [],
     };
 
     try {
@@ -250,7 +273,9 @@ class CacheService {
       results.errors.push(`Failed to cleanup cache: ${error.message}`);
     }
 
-    console.log(`Cache cleanup: ${results.removed} expired entries removed from ${results.checked} total`);
+    console.log(
+      `Cache cleanup: ${results.removed} expired entries removed from ${results.checked} total`
+    );
     return results;
   }
 
@@ -271,7 +296,7 @@ class CacheService {
               key,
               data: cached.data,
               timestamp: cached.timestamp,
-              isExpired: this.isExpired(cached.timestamp)
+              isExpired: this.isExpired(cached.timestamp),
             });
           }
         } catch (error) {
