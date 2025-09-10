@@ -862,6 +862,56 @@
   }
 }
 
+/* Product Card Swipe Overlay Styles */
+.product-swipe-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 12px;
+  z-index: 10;
+}
+
+.product-swipe-overlay.enriched {
+  background-color: rgba(72, 187, 120, 0.9);
+}
+
+.product-swipe-overlay.error {
+  background-color: rgba(229, 62, 62, 0.9);
+}
+
+.product-swipe-overlay.accept {
+  background-color: rgba(72, 187, 120, 0.9);
+}
+
+.product-swipe-overlay.reject {
+  background-color: rgba(229, 62, 62, 0.9);
+}
+
+/* Mobile responsive styles for product cards */
+@media (max-width: 768px) {
+  .product-card {
+    position: relative;
+    overflow: hidden;
+  }
+  
+  .product-card.swiping-left {
+    transform: translateX(-120vw) rotate(-30deg);
+    opacity: 0;
+    transition: transform 0.5s ease, opacity 0.3s ease;
+  }
+  
+  .product-card.swiping-right {
+    transform: translateX(120vw) rotate(30deg);
+    opacity: 0;
+    transition: transform 0.5s ease, opacity 0.3s ease;
+  }
+}
+
 .error {
   background: #fed7d7;
   color: #9b2c2c;
