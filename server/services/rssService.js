@@ -10,9 +10,14 @@ class RSSService {
           ['content:encoded', 'content'],
           ['description', 'rawDescription'],
           ['creator', 'creator'],
-          ['author', 'author']
-        ]
-      }
+          ['author', 'author'],
+        ],
+      },
+      headers: {
+        'User-Agent':
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+        Accept: 'application/rss+xml, application/xml, text/xml',
+      },
     });
     this.baseUrl = 'https://www.producthunt.com/feed';
   }
@@ -27,7 +32,8 @@ class RSSService {
       totalProcessed: 0,
       totalNew: 0,
       totalDuplicates: 0,
-      errors: []
+      errors: [],
+      newItems: [], // Add newItems to collect new products
     };
 
     console.log(`Starting RSS fetch for ${rssCategories.length} categories...`);
@@ -36,28 +42,33 @@ class RSSService {
       try {
         console.log(`Processing category: ${category}`);
         const categoryResult = await this.fetchCategory(category);
-        
+
         results.categories.push({
           category,
           processed: categoryResult.processed,
           newProducts: categoryResult.newProducts,
-          duplicates: categoryResult.duplicates
+          duplicates: categoryResult.duplicates,
         });
 
         results.totalProcessed += categoryResult.processed;
         results.totalNew += categoryResult.newProducts;
         results.totalDuplicates += categoryResult.duplicates;
-
+        results.newItems.push(...(categoryResult.newItems || []));
       } catch (error) {
-        console.error(`Error processing category ${category}:`, error.message);
+        const errorMessage = error.message.includes('403')
+          ? `Failed to fetch RSS feed for ${category}: Status code 403 (Possible authentication required or rate limit)`
+          : error.message;
+        console.error(`Error processing category ${category}:`, errorMessage);
         results.errors.push({
           category,
-          error: error.message
+          error: errorMessage,
         });
       }
     }
 
-    console.log(`RSS fetch completed. Total: ${results.totalProcessed} processed, ${results.totalNew} new, ${results.totalDuplicates} duplicates`);
+    console.log(
+      `RSS fetch completed. Total: ${results.totalProcessed} processed, ${results.totalNew} new, ${results.totalDuplicates} duplicates`
+    );
     return results;
   }
 
@@ -77,28 +88,33 @@ class RSSService {
       const results = {
         processed: 0,
         newProducts: 0,
-        duplicates: 0
+        duplicates: 0,
+        newItems: [], // Track new products
       };
 
       for (const item of feed.items) {
         try {
           const productData = this.extractProductData(item, category);
-          
+
           if (productData) {
             const savedProduct = await dbService.saveProduct(productData);
             results.processed++;
-            
-            // Enrich with Product Hunt specific details (votes, day rank, topics)
+
+            // Enrich with Product Hunt specific details
             try {
               const phEnrichmentService = await import('./phEnrichmentService.js');
               await phEnrichmentService.default.enrichProduct(savedProduct);
             } catch (enrichError) {
-              console.warn(`Enrichment failed for ${savedProduct.name}:`, enrichError.message);
+              console.warn(
+                `Enrichment failed for ${savedProduct.name}:`,
+                enrichError.message
+              );
             }
-            
+
             // Check if it was a new product or duplicate
             if (savedProduct.createdAt === savedProduct.updatedAt) {
               results.newProducts++;
+              results.newItems.push(savedProduct); // Add to newItems
             } else {
               results.duplicates++;
             }
@@ -111,8 +127,11 @@ class RSSService {
 
       return results;
     } catch (error) {
-      console.error(`Failed to fetch RSS feed for ${category}:`, error.message);
-      throw error;
+      const errorMessage = error.message.includes('403')
+        ? `Failed to fetch RSS feed for ${category}: Status code 403 (Possible authentication required or rate limit)`
+        : error.message;
+      console.error(`Failed to fetch RSS feed for ${category}:`, errorMessage);
+      throw new Error(errorMessage);
     }
   }
 
@@ -129,7 +148,7 @@ class RSSService {
         console.warn('Skipping item: missing title or link');
         return null;
       }
-      
+
       // Normalize the Product Hunt link to prevent duplicates
       const normalizedLink = this.normalizeLink(item.link);
 
@@ -150,7 +169,6 @@ class RSSService {
       } else if (item.author) {
         makerName = item.author;
       } else if (description) {
-        // Try to extract maker from content or description
         makerName = this.extractMakerFromContent(description);
       }
 
@@ -159,19 +177,19 @@ class RSSService {
         name: this.cleanTitle(item.title),
         description: this.cleanDescription(description),
         category: category,
-        publishedAt: item.pubDate ? new Date(item.pubDate).toISOString() : new Date().toISOString(),
-        phLink: normalizedLink, // Use normalized link to prevent duplicates
-        originalLink: item.link, // Store original link for reference
+        publishedAt: item.pubDate
+          ? new Date(item.pubDate).toISOString()
+          : new Date().toISOString(),
+        phLink: normalizedLink,
+        originalLink: item.link,
         makerName: makerName ? this.cleanMakerName(makerName) : null,
-        upvotes: 0, // Initialize with 0 upvotes for new products
-        phVotes: 0, // Initialize Product Hunt votes
-        phDayRank: null, // Initialize Product Hunt day rank
-        phTopics: [], // Initialize Product Hunt topics
-        companyWebsite: null, // Company website URL
-        companyInfo: null, // Company information text
-        launchDate: null, // Launch date
-        accelerator: null, // Accelerator info (e.g., Y Combinator)
-        linkedin: null // LinkedIn URL
+        upvotes: 0,
+        phTopics: [],
+        companyWebsite: null,
+        companyInfo: null,
+        launchDate: null,
+        accelerator: null,
+        linkedin: null,
       };
 
       // Validate that we have meaningful data
@@ -193,14 +211,13 @@ class RSSService {
    * @returns {string} - Cleaned title
    */
   cleanTitle(title) {
-    // Remove common Product Hunt prefixes/suffixes and clean up
     return title
       .replace(/^Product Hunt:\s*/i, '')
       .replace(/\s*-\s*Product Hunt$/i, '')
       .trim()
-      .substring(0, 200); // Limit length
+      .substring(0, 200);
   }
-  
+
   /**
    * Normalize a URL to prevent duplicates with different formats
    * @param {string} url - URL to normalize
@@ -208,9 +225,8 @@ class RSSService {
    */
   normalizeLink(url) {
     if (!url) return '';
-    
+
     try {
-      // Remove trailing slashes and query parameters
       const parsedUrl = new URL(url);
       return parsedUrl.origin + parsedUrl.pathname.replace(/\/$/, '');
     } catch (error) {
@@ -226,31 +242,32 @@ class RSSService {
    */
   cleanDescription(description) {
     if (!description) return '';
-    
-    // Remove HTML tags and clean up
+
     let cleaned = description
-      .replace(/<[^>]*>/g, '') // Remove HTML tags
+      .replace(/<[^>]*>/g, '')
       .replace(/&quot;/g, '"')
       .replace(/&amp;/g, '&')
       .replace(/&lt;/g, '<')
       .replace(/&gt;/g, '>')
       .replace(/&nbsp;/g, ' ')
-      .replace(/\s+/g, ' ') // Normalize whitespace
+      .replace(/\s+/g, ' ')
       .trim();
 
-    // Remove Product Hunt specific footer content (Discussion | Link)
     cleaned = cleaned
       .replace(/Discussion\s*\|\s*Link\s*$/i, '')
       .replace(/Discussion\s*$/i, '')
       .replace(/\|\s*Link\s*$/i, '')
       .trim();
 
-    // If description is too short or meaningless, return empty
-    if (cleaned.length < 10 || cleaned.toLowerCase() === 'no description' || cleaned === '|') {
+    if (
+      cleaned.length < 10 ||
+      cleaned.toLowerCase() === 'no description' ||
+      cleaned === '|'
+    ) {
       return '';
     }
 
-    return cleaned.substring(0, 500); // Limit length
+    return cleaned.substring(0, 500);
   }
 
   /**
@@ -261,12 +278,11 @@ class RSSService {
   extractMakerFromContent(content) {
     if (!content) return null;
 
-    // Try to find maker patterns in content
     const patterns = [
       /by\s+([^<>\n,]+)/i,
       /maker[:\s]+([^<>\n,]+)/i,
       /created by\s+([^<>\n,]+)/i,
-      /from\s+([^<>\n,]+)/i
+      /from\s+([^<>\n,]+)/i,
     ];
 
     for (const pattern of patterns) {
@@ -286,10 +302,10 @@ class RSSService {
    */
   cleanMakerName(maker) {
     return maker
-      .replace(/<[^>]*>/g, '') // Remove HTML tags
-      .replace(/[@#]/g, '') // Remove @ and # symbols
+      .replace(/<[^>]*>/g, '')
+      .replace(/[@#]/g, '')
       .trim()
-      .substring(0, 100); // Limit length
+      .substring(0, 100);
   }
 
   /**
@@ -308,30 +324,33 @@ class RSSService {
    */
   async testCategory(category) {
     console.log(`Testing RSS parsing for category: ${category}`);
-    
+
     try {
       const url = this.getFeedUrl(category);
       const feed = await this.parser.parseURL(url);
-      
+
       const testResult = {
         category,
         url,
         feedTitle: feed.title,
         itemCount: feed.items.length,
-        sampleItems: feed.items.slice(0, 3).map(item => ({
+        sampleItems: feed.items.slice(0, 3).map((item) => ({
           title: item.title,
           link: item.link,
           pubDate: item.pubDate,
           hasDescription: !!item.description,
-          hasContent: !!item.content
-        }))
+          hasContent: !!item.content,
+        })),
       };
 
       console.log('Test result:', JSON.stringify(testResult, null, 2));
       return testResult;
     } catch (error) {
-      console.error(`Test failed for ${category}:`, error.message);
-      throw error;
+      const errorMessage = error.message.includes('403')
+        ? `Failed to fetch RSS feed for ${category}: Status code 403 (Possible authentication required or rate limit)`
+        : error.message;
+      console.error(`Test failed for ${category}:`, errorMessage);
+      throw new Error(errorMessage);
     }
   }
 }
