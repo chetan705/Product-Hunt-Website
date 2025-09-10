@@ -11,8 +11,7 @@ const MainDashboard = () => {
   const [message, setMessage] = useState(null);
   const [selectedCategory, setSelectedCategory] = useState('all');
   const [selectedStatus, setSelectedStatus] = useState('all');
-  const [selectedSort, setSelectedSort] = useState('rank'); // 'rank' | 'top50' | 'newest' | 'oldest' | 'linkedin-enriched'
-  const [isEnrichingLinkedIn, setIsEnrichingLinkedIn] = useState(false);
+  const [selectedSort, setSelectedSort] = useState('upvotes'); // Default to upvotes
 
   const categories = ['artificial-intelligence', 'developer-tools', 'saas'];
 
@@ -88,26 +87,22 @@ const MainDashboard = () => {
     }
 
     // Apply sorting
-    if (selectedSort === 'rank') {
-      // Sort by upvotes (descending), then by date for those with 0 upvotes
+    if (selectedSort === 'upvotes') {
+      // Sort by local upvotes (descending), then by date for those with no upvotes
       filtered.sort((a, b) => {
         const votesA = a.upvotes || 0;
         const votesB = b.upvotes || 0;
         
-        // If both have votes, sort by votes
-        if (votesA > 0 && votesB > 0) {
+        // If both have upvotes, sort by upvotes
+        if (votesA !== votesB) {
           return votesB - votesA;
         }
         
-        // If only one has votes, it comes first
-        if (votesA > 0) return -1;
-        if (votesB > 0) return 1;
-        
-        // If both have 0 votes, sort by date (newest first)
+        // If both have same upvotes, sort by date (newest first)
         return new Date(b.createdAt || b.publishedAt) - new Date(a.createdAt || a.publishedAt);
       });
     } else if (selectedSort === 'top50') {
-      // Only items with votes > 0
+      // Only items with upvotes > 0
       filtered = filtered.filter(p => (p.upvotes || 0) > 0);
       filtered.sort((a, b) => {
         const votesA = a.upvotes || 0;
@@ -117,33 +112,15 @@ const MainDashboard = () => {
       });
       if (filtered.length > 50) filtered = filtered.slice(0, 50);
     } else if (selectedSort === 'linkedin-enriched') {
-      // Filter products that have valid LinkedIn company URLs
-      filtered = filtered.filter(product => {
-        return product.linkedin && 
-               typeof product.linkedin === 'string' && 
-               product.linkedin.includes('linkedin.com/company/') && 
-               !product.linkedin.includes('producthunt.com') &&
-               product.linkedin !== "https://www.linkedin.com/company/producthunt";
-      });
-      
-      // Sort by upvotes descending
-      filtered.sort((a, b) => {
-        const votesA = a.upvotes || 0;
-        const votesB = b.upvotes || 0;
-        return votesB - votesA;
-      });
-      
-      // Select top 10 products with valid LinkedIn URLs
-      const top10 = [];
-      for (const product of filtered) {
-        if (product.linkedin && 
-            product.linkedin.includes('linkedin.com/company/') && 
-            product.linkedin !== "https://www.linkedin.com/company/producthunt") {
-          top10.push(product);
-        }
-        if (top10.length === 10) break;
-      }
-      filtered = top10;
+      // Filter products with LinkedIn profiles except for the specific URL
+      filtered = filtered.filter(product => 
+        product.linkedin && 
+        typeof product.linkedin === 'string' && 
+        product.linkedin.includes('linkedin.com') && 
+        product.linkedin !== 'https://www.linkedin.com/company/producthunt'
+      );
+      // Sort by newest first
+      filtered.sort((a, b) => new Date(b.createdAt || b.publishedAt) - new Date(a.createdAt || a.publishedAt));
     } else if (selectedSort === 'newest') {
       filtered.sort((a, b) => new Date(b.createdAt || b.publishedAt) - new Date(a.createdAt || a.publishedAt));
     } else if (selectedSort === 'oldest') {
@@ -225,107 +202,14 @@ const MainDashboard = () => {
     }
   };
 
-  const handleEnrichLinkedIn = async () => {
-    if (selectedSort !== 'linkedin-enriched' || filteredProducts.length === 0) return;
-    
-    setIsEnrichingLinkedIn(true);
-    setError(null);
-    setMessage(null);
-
-    const API_URL = '/api/linkedin/companies';
-
-    const enrichedProducts = [];
-    const errors = [];
-
-    for (const product of filteredProducts) {
-      try {
-        // Validate LinkedIn URL format before sending to API
-        if (!product.linkedin || !product.linkedin.includes('linkedin.com/company/')) {
-          console.warn(`Skipping invalid LinkedIn URL for ${product.name}: ${product.linkedin}`);
-          errors.push(product.name);
-          continue;
-        }
-
-        console.log(`Enriching ${product.name} with LinkedIn URL: ${product.linkedin}`);
-        
-        const response = await fetch(API_URL, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({
-            linkedin_url: product.linkedin
-          })
-        });
-
-        if (!response.ok) {
-          const errorData = await response.json().catch(() => ({}));
-          console.error(`API error for ${product.name}:`, errorData);
-          throw new Error(`HTTP ${response.status}: Failed to enrich ${product.name}`);
-        }
-
-        const data = await response.json();
-        const companyData = data[0]; // Specter returns an array; take the first item
-        if (!companyData) {
-          console.warn(`No enrichment data returned for ${product.name}`);
-          errors.push(product.name);
-          continue; // Skip without throwing, to continue with others
-        }
-        
-        console.log(`Successfully enriched ${product.name}:`, companyData);
-        const extracted = {
-          operating_status: companyData.operating_status,
-          regions: companyData.regions,
-          founded_year: companyData.founded_year,
-          founders: companyData.founders,
-          founder_info: companyData.founder_info,
-          founder_count: companyData.founder_count,
-          employee_count: companyData.employee_count,
-          employee_count_range: companyData.employee_count_range,
-          city: companyData.hq?.city,
-          state: companyData.hq?.state,
-          country: companyData.hq?.country,
-          phone_number: companyData.contact?.phone_number,
-          email: companyData.contact?.email,
-          growth_stage: companyData.growth_stage
-        };
-
-        enrichedProducts.push({
-          ...product,
-          linkedInEnriched: true,
-          linkedInData: extracted
-        });
-
-        // Add delay to avoid rate limiting (1 second between calls)
-        await new Promise(resolve => setTimeout(resolve, 1000));
-      } catch (err) {
-        console.error(`Error enriching ${product.name}:`, err.message);
-        errors.push(product.name);
-      }
-    }
-
-    // Update products state
-    const updatedProducts = [...products];
-    enrichedProducts.forEach(enriched => {
-      const index = updatedProducts.findIndex(p => p.id === enriched.id);
-      if (index !== -1) {
-        updatedProducts[index] = enriched;
-      }
-    });
-
-    setProducts(updatedProducts);
-    filterProducts(); // Re-filter to update display
-
-    if (errors.length > 0) {
-      setError(`Failed to enrich ${errors.length} products: ${errors.join(', ')}`);
-    } else {
-      setMessage({
-        type: 'success',
-        text: `LinkedIn enrichment completed for ${enrichedProducts.length} products!`
-      });
-    }
-    
-    setIsEnrichingLinkedIn(false);
+  const handleSingleEnrich = (id, data) => {
+    setProducts(prevProducts => 
+      prevProducts.map(product => 
+        product.id === id 
+          ? { ...product, linkedInEnriched: true, linkedInData: data } 
+          : product
+      )
+    );
   };
 
   const formatDate = (dateString) => {
@@ -368,9 +252,9 @@ const MainDashboard = () => {
                 <button onClick={() => setSelectedStatus('all')} className="ml-2 text-green-600 hover:text-green-800">×</button>
               </span>
             )}
-            {selectedSort === 'votes' && (
+            {selectedSort === 'upvotes' && (
               <span className="inline-flex items-center px-3 py-1 rounded-full text-sm bg-orange-100 text-orange-800">
-                🔥 Top 50 by Votes
+                🔥 Most Upvoted
                 <button onClick={() => setSelectedSort('newest')} className="ml-2 text-orange-600 hover:text-orange-800">×</button>
               </span>
             )}
@@ -444,11 +328,11 @@ const MainDashboard = () => {
                 onChange={(e) => setSelectedSort(e.target.value)}
                 className="form-input w-full py-2 px-3 rounded-lg border border-gray-300 focus:ring-2 focus:ring-orange-500 focus:border-orange-500"
               >
-                <option value="rank">Most Votes</option>
-                <option value="top50">Top 50 by Votes</option>
+                <option value="upvotes">Most Upvoted</option>
+                <option value="top50">Top 50 by Upvotes</option>
                 <option value="newest">Newest First</option>
                 <option value="oldest">Oldest First</option>
-                <option value="linkedin-enriched">LinkedIn Enriched</option>
+                <option value="linkedin-enriched">LinkedIn Profiles</option>
               </select>
             </div>
 
@@ -472,29 +356,6 @@ const MainDashboard = () => {
                 </>
               )}
             </button>
-
-            {/* LinkedIn Enrichment Button - Only visible when LinkedIn Enriched option is selected */}
-            {selectedSort === 'linkedin-enriched' && (
-              <button
-                className="flex-shrink-0 bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 px-4 rounded-lg transition-colors duration-200 flex items-center"
-                onClick={handleEnrichLinkedIn}
-                disabled={isEnrichingLinkedIn}
-              >
-                {isEnrichingLinkedIn ? (
-                  <>
-                    <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin mr-2"></div>
-                    Enriching...
-                  </>
-                ) : (
-                  <>
-                    <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
-                    </svg>
-                    Enrich LinkedIn Profiles
-                  </>
-                )}
-              </button>
-            )}
 
             {/* Refresh Button */}
             <button
@@ -554,7 +415,8 @@ const MainDashboard = () => {
             formatDate={formatDate}
             selectedCategory={selectedCategory}
             selectedStatus={selectedStatus}
-            selectedSort={selectedSort} // Pass selectedSort to ProductList
+            selectedSort={selectedSort}
+            onEnrich={handleSingleEnrich}
           />
         )}
       </main>
