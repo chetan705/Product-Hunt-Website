@@ -42,29 +42,6 @@ class PhEnrichmentService {
       const html = await response.text();
       const root = parse(html);
 
-      // Extract votes
-      let phVotes = 0;
-      const voteSelectors = [
-        '[data-test="vote-button"] span',
-        '[data-test="vote-count"]',
-        '.styles_voteCount__2dP9J',
-        '[class*="voteCount"]',
-        '.vote-button__count',
-        'button[class*="vote"] span'
-      ];
-      for (const selector of voteSelectors) {
-        const voteElement = root.querySelector(selector);
-        if (voteElement) {
-          const voteText = voteElement.textContent.trim();
-          const voteMatch = voteText.match(/(\d+)\s*points?/i) || voteText.match(/(\d+)/);
-          if (voteMatch) {
-            phVotes = parseInt(voteMatch[1], 10);
-            console.log(`Found votes for ${product.name}: ${phVotes} (Selector: ${selector})`);
-            break;
-          }
-        }
-      }
-
       // Extract day rank
       let phDayRank = null;
       const rankSelectors = [
@@ -283,7 +260,6 @@ class PhEnrichmentService {
       }
 
       const enrichedData = {
-        phVotes: phVotes || product.phVotes || 0,
         phDayRank: phDayRank > 0 ? phDayRank : (product.phDayRank || null),
         phTopics: phTopics.length > 0 ? phTopics : (product.phTopics || []),
         companyWebsite: companyWebsite || product.companyWebsite || null,
@@ -327,7 +303,6 @@ class PhEnrichmentService {
       console.log(`Processing new or unenriched product: ${product.name} (ID: ${product.id})`);
       const updatedProduct = await this.enrichProduct(product);
       if (updatedProduct && (
-        updatedProduct.phVotes !== product.phVotes ||
         updatedProduct.phDayRank !== product.phDayRank ||
         updatedProduct.phTopics.length !== product.phTopics.length ||
         updatedProduct.companyWebsite !== product.companyWebsite ||
