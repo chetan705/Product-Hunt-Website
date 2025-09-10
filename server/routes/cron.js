@@ -14,13 +14,13 @@ const phEnrichmentService = require('../services/phEnrichmentService');
 router.post('/fetch', async (req, res) => {
   const startTime = Date.now();
   const jobName = 'rss-fetch';
-  
+
   console.log('=== RSS Fetch Cron Job Started ===');
   console.log('Timestamp:', new Date().toISOString());
 
   try {
     const scheduleCheck = await scheduleService.shouldJobRun(jobName);
-    
+
     if (!scheduleCheck.shouldRun) {
       console.log(`Skipping RSS fetch: ${scheduleCheck.reason}`);
       return res.json({
@@ -28,14 +28,14 @@ router.post('/fetch', async (req, res) => {
         skipped: true,
         reason: scheduleCheck.reason,
         schedule: scheduleCheck,
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
       });
     }
 
     console.log(`RSS fetch allowed: ${scheduleCheck.reason}`);
 
     const rssResults = await rssService.fetchAllCategories();
-    
+
     console.log('=== RSS Fetch Completed ===');
     console.log(`Total processed: ${rssResults.totalProcessed}`);
     console.log(`New products: ${rssResults.totalNew}`);
@@ -47,23 +47,34 @@ router.post('/fetch', async (req, res) => {
       console.log('=== Starting LinkedIn Enrichment ===');
       enrichmentResults = await linkedinEnrichmentService.enrichProducts();
     } catch (enrichmentError) {
-      console.error('LinkedIn enrichment failed, but continuing:', enrichmentError.message);
+      console.error(
+        'LinkedIn enrichment failed, but continuing:',
+        enrichmentError.message
+      );
       enrichmentResults = {
         totalProcessed: 0,
         successfulEnrichments: 0,
         failedEnrichments: 0,
         cacheHits: 0,
-        errors: [{ error: enrichmentError.message }]
+        errors: [{ error: enrichmentError.message }],
       };
     }
 
     let phEnrichmentResults = null;
     try {
       console.log('=== Starting Product Hunt Enrichment for New Products ===');
-      phEnrichmentResults = await phEnrichmentService.enrichNewProducts(rssResults.newItems);
+      phEnrichmentResults = await phEnrichmentService.enrichNewProducts(
+        rssResults.newItems || []
+      );
     } catch (phError) {
-      console.error('Product Hunt enrichment failed, but continuing:', phError.message);
-      phEnrichmentResults = { totalEnriched: 0, errors: [{ error: phError.message }] };
+      console.error(
+        'Product Hunt enrichment failed, but continuing:',
+        phError.message
+      );
+      phEnrichmentResults = {
+        totalEnriched: 0,
+        errors: [{ error: phError.message }],
+      };
     }
 
     const endTime = Date.now();
@@ -71,17 +82,21 @@ router.post('/fetch', async (req, res) => {
 
     console.log('=== Combined Cron Job Completed ===');
     console.log(`Total Duration: ${duration}ms`);
-    console.log(`RSS - Processed: ${rssResults.totalProcessed}, New: ${rssResults.totalNew}`);
-    console.log(`LinkedIn - Processed: ${enrichmentResults.totalProcessed}, Successful: ${enrichmentResults.successfulEnrichments}`);
+    console.log(
+      `RSS - Processed: ${rssResults.totalProcessed}, New: ${rssResults.totalNew}`
+    );
+    console.log(
+      `LinkedIn - Processed: ${enrichmentResults.totalProcessed}, Successful: ${enrichmentResults.successfulEnrichments}`
+    );
     console.log(`PH Enrichment - Enriched: ${phEnrichmentResults.totalEnriched}`);
 
     const jobResults = {
       rss: rssResults,
       enrichment: enrichmentResults,
       phEnrichment: phEnrichmentResults,
-      duration: `${duration}ms`
+      duration: `${duration}ms`,
     };
-    
+
     await scheduleService.recordJobRun(jobName, jobResults);
 
     const stats = await dbService.getStats();
@@ -98,9 +113,9 @@ router.post('/fetch', async (req, res) => {
             totalProcessed: rssResults.totalProcessed,
             totalNew: rssResults.totalNew,
             totalDuplicates: rssResults.totalDuplicates,
-            errorCount: rssResults.errors.length
+            errorCount: rssResults.errors.length,
           },
-          errors: rssResults.errors
+          errors: rssResults.errors,
         },
         linkedinEnrichment: {
           summary: {
@@ -108,25 +123,24 @@ router.post('/fetch', async (req, res) => {
             successfulEnrichments: enrichmentResults.successfulEnrichments,
             failedEnrichments: enrichmentResults.failedEnrichments,
             cacheHits: enrichmentResults.cacheHits,
-            errorCount: enrichmentResults.errors.length
+            errorCount: enrichmentResults.errors.length,
           },
-          errors: enrichmentResults.errors
+          errors: enrichmentResults.errors,
         },
         phEnrichment: {
           summary: {
             totalEnriched: phEnrichmentResults.totalEnriched,
-            errorCount: phEnrichmentResults.errors.length
+            errorCount: phEnrichmentResults.errors.length,
           },
-          errors: phEnrichmentResults.errors
-        }
+          errors: phEnrichmentResults.errors,
+        },
       },
-      database: stats
+      database: stats,
     });
-
   } catch (error) {
     const endTime = Date.now();
     const duration = endTime - startTime;
-    
+
     console.error('=== RSS Fetch Cron Job Failed ===');
     console.error('Error:', error.message);
     console.error('Duration:', `${duration}ms`);
@@ -138,8 +152,8 @@ router.post('/fetch', async (req, res) => {
       duration: `${duration}ms`,
       error: {
         message: error.message,
-        type: error.name || 'UnknownError'
-      }
+        type: error.name || 'UnknownError',
+      },
     });
   }
 });
@@ -162,13 +176,13 @@ router.post('/fetch/:category', async (req, res) => {
         success: false,
         error: {
           message: `Invalid category: ${category}`,
-          validCategories: rssCategories
-        }
+          validCategories: rssCategories,
+        },
       });
     }
 
     const result = await rssService.fetchCategory(category);
-    
+
     const endTime = Date.now();
     const duration = endTime - startTime;
 
@@ -183,13 +197,12 @@ router.post('/fetch/:category', async (req, res) => {
       timestamp: new Date().toISOString(),
       duration: `${duration}ms`,
       category,
-      result
+      result,
     });
-
   } catch (error) {
     const endTime = Date.now();
     const duration = endTime - startTime;
-    
+
     console.error(`=== Category ${category} Fetch Failed ===`);
     console.error('Error:', error.message);
     console.error('Duration:', `${duration}ms`);
@@ -201,8 +214,8 @@ router.post('/fetch/:category', async (req, res) => {
       category,
       error: {
         message: error.message,
-        type: error.name || 'UnknownError'
-      }
+        type: error.name || 'UnknownError',
+      },
     });
   }
 });
@@ -222,22 +235,21 @@ router.get('/status', async (req, res) => {
       status: 'healthy',
       configuration: {
         categories: rssCategories,
-        database: stats.totalProducts > 0 ? 'connected' : 'empty'
+        database: stats.totalProducts > 0 ? 'connected' : 'empty',
       },
-      database: stats
+      database: stats,
     });
-
   } catch (error) {
     console.error('Status check failed:', error.message);
-    
+
     res.status(500).json({
       success: false,
       timestamp: new Date().toISOString(),
       status: 'unhealthy',
       error: {
         message: error.message,
-        type: error.name || 'UnknownError'
-      }
+        type: error.name || 'UnknownError',
+      },
     });
   }
 });
@@ -248,29 +260,28 @@ router.get('/status', async (req, res) => {
  */
 router.post('/test/:category', async (req, res) => {
   const { category } = req.params;
-  
+
   console.log(`=== RSS Test for Category: ${category} ===`);
 
   try {
     const result = await rssService.testCategory(category);
-    
+
     res.json({
       success: true,
       timestamp: new Date().toISOString(),
-      test: result
+      test: result,
     });
-
   } catch (error) {
     console.error(`Test failed for ${category}:`, error.message);
-    
+
     res.status(500).json({
       success: false,
       timestamp: new Date().toISOString(),
       category,
       error: {
         message: error.message,
-        type: error.name || 'UnknownError'
-      }
+        type: error.name || 'UnknownError',
+      },
     });
   }
 });
@@ -286,7 +297,7 @@ router.post('/enrich', async (req, res) => {
 
   try {
     const results = await linkedinEnrichmentService.enrichProducts();
-    
+
     const endTime = Date.now();
     const duration = endTime - startTime;
 
@@ -308,17 +319,16 @@ router.post('/enrich', async (req, res) => {
           successfulEnrichments: results.successfulEnrichments,
           failedEnrichments: results.failedEnrichments,
           cacheHits: results.cacheHits,
-          errorCount: results.errors.length
+          errorCount: results.errors.length,
         },
-        errors: results.errors
+        errors: results.errors,
       },
-      database: stats
+      database: stats,
     });
-
   } catch (error) {
     const endTime = Date.now();
     const duration = endTime - startTime;
-    
+
     console.error('=== LinkedIn Enrichment Job Failed ===');
     console.error('Error:', error.message);
     console.error('Duration:', `${duration}ms`);
@@ -329,8 +339,8 @@ router.post('/enrich', async (req, res) => {
       duration: `${duration}ms`,
       error: {
         message: error.message,
-        type: error.name || 'UnknownError'
-      }
+        type: error.name || 'UnknownError',
+      },
     });
   }
 });
@@ -348,7 +358,7 @@ router.post('/enrich/:productId', async (req, res) => {
     if (!product) {
       return res.status(404).json({
         success: false,
-        error: { message: `Product not found: ${productId}` }
+        error: { message: `Product not found: ${productId}` },
       });
     }
 
@@ -356,14 +366,14 @@ router.post('/enrich/:productId', async (req, res) => {
     res.json({
       success: true,
       timestamp: new Date().toISOString(),
-      product: enrichedProduct
+      product: enrichedProduct,
     });
   } catch (error) {
     console.error(`Failed to enrich product ${productId}:`, error.message);
     res.status(500).json({
       success: false,
       timestamp: new Date().toISOString(),
-      error: { message: error.message }
+      error: { message: error.message },
     });
   }
 });
@@ -376,7 +386,7 @@ router.get('/enrich/status', async (req, res) => {
   try {
     const cacheStats = await linkedinEnrichmentService.getCacheStats();
     const dbStats = await dbService.getStats();
-    
+
     res.json({
       success: true,
       timestamp: new Date().toISOString(),
@@ -385,21 +395,20 @@ router.get('/enrich/status', async (req, res) => {
         database: {
           totalProducts: dbStats.totalProducts,
           enrichedProducts: dbStats.enrichedProducts,
-          needingEnrichment: dbStats.needingEnrichment
-        }
-      }
+          needingEnrichment: dbStats.needingEnrichment,
+        },
+      },
     });
-
   } catch (error) {
     console.error('Enrichment status check failed:', error.message);
-    
+
     res.status(500).json({
       success: false,
       timestamp: new Date().toISOString(),
       error: {
         message: error.message,
-        type: error.name || 'UnknownError'
-      }
+        type: error.name || 'UnknownError',
+      },
     });
   }
 });
@@ -411,24 +420,23 @@ router.get('/enrich/status', async (req, res) => {
 router.post('/enrich/clear-cache', async (req, res) => {
   try {
     const results = await linkedinEnrichmentService.clearCache();
-    
+
     res.json({
       success: true,
       timestamp: new Date().toISOString(),
       message: 'LinkedIn search cache cleared successfully',
-      results: results
+      results: results,
     });
-
   } catch (error) {
     console.error('Failed to clear cache:', error.message);
-    
+
     res.status(500).json({
       success: false,
       timestamp: new Date().toISOString(),
       error: {
         message: error.message,
-        type: error.name || 'UnknownError'
-      }
+        type: error.name || 'UnknownError',
+      },
     });
   }
 });
@@ -440,23 +448,22 @@ router.post('/enrich/clear-cache', async (req, res) => {
 router.get('/schedule/status', async (req, res) => {
   try {
     const scheduleStatus = await scheduleService.getScheduleStatus();
-    
+
     res.json({
       success: true,
       timestamp: new Date().toISOString(),
-      schedule: scheduleStatus
+      schedule: scheduleStatus,
     });
-
   } catch (error) {
     console.error('Schedule status check failed:', error.message);
-    
+
     res.status(500).json({
       success: false,
       timestamp: new Date().toISOString(),
       error: {
         message: error.message,
-        type: error.name || 'UnknownError'
-      }
+        type: error.name || 'UnknownError',
+      },
     });
   }
 });
@@ -469,34 +476,33 @@ router.post('/schedule/force/:jobName', async (req, res) => {
   try {
     const { jobName } = req.params;
     const success = await scheduleService.forceJobRunnable(jobName);
-    
+
     if (success) {
       res.json({
         success: true,
         timestamp: new Date().toISOString(),
         message: `Job ${jobName} has been forced runnable`,
-        jobName: jobName
+        jobName: jobName,
       });
     } else {
       res.status(500).json({
         success: false,
         timestamp: new Date().toISOString(),
         error: {
-          message: `Failed to force job ${jobName} runnable`
-        }
+          message: `Failed to force job ${jobName} runnable`,
+        },
       });
     }
-
   } catch (error) {
     console.error('Failed to force job runnable:', error.message);
-    
+
     res.status(500).json({
       success: false,
       timestamp: new Date().toISOString(),
       error: {
         message: error.message,
-        type: error.name || 'UnknownError'
-      }
+        type: error.name || 'UnknownError',
+      },
     });
   }
 });
@@ -509,27 +515,26 @@ router.post('/cache/cleanup', async (req, res) => {
   try {
     const cacheResults = await cacheService.cleanupExpiredCache();
     const scheduleResults = await scheduleService.cleanupOldSchedules();
-    
+
     res.json({
       success: true,
       timestamp: new Date().toISOString(),
       message: 'Cache cleanup completed',
       results: {
         cache: cacheResults,
-        schedule: scheduleResults
-      }
+        schedule: scheduleResults,
+      },
     });
-
   } catch (error) {
     console.error('Cache cleanup failed:', error.message);
-    
+
     res.status(500).json({
       success: false,
       timestamp: new Date().toISOString(),
       error: {
         message: error.message,
-        type: error.name || 'UnknownError'
-      }
+        type: error.name || 'UnknownError',
+      },
     });
   }
 });
@@ -542,24 +547,23 @@ router.get('/cache/stats', async (req, res) => {
   try {
     const cacheStats = await cacheService.getCacheStats();
     const scheduleStats = await scheduleService.getScheduleStatus();
-    
+
     res.json({
       success: true,
       timestamp: new Date().toISOString(),
       cache: cacheStats,
-      schedule: scheduleStats
+      schedule: scheduleStats,
     });
-
   } catch (error) {
     console.error('Cache stats failed:', error.message);
-    
+
     res.status(500).json({
       success: false,
       timestamp: new Date().toISOString(),
       error: {
         message: error.message,
-        type: error.name || 'UnknownError'
-      }
+        type: error.name || 'UnknownError',
+      },
     });
   }
 });
