@@ -2,9 +2,21 @@ import React, { useState, useEffect } from 'react';
 import PropTypes from 'prop-types';
 import { useSwipeable } from 'react-swipeable';
 
+// Utility to debounce API calls
+const debounce = (func, wait) => {
+  let timeout;
+  return (...args) => {
+    clearTimeout(timeout);
+    return new Promise(resolve => {
+      timeout = setTimeout(() => resolve(func(...args)), wait);
+    });
+  };
+};
+
 function ProductList({ products, selectedCategory, selectedStatus, selectedSort, formatDate, onEnrich, onStatusChange }) {
   const [currentCardIndex, setCurrentCardIndex] = useState(0);
   const [isMobile, setIsMobile] = useState(false);
+  const [normalizedProducts, setNormalizedProducts] = useState([]);
 
   // Check for mobile view
   useEffect(() => {
@@ -14,22 +26,45 @@ function ProductList({ products, selectedCategory, selectedStatus, selectedSort,
     return () => window.removeEventListener('resize', checkMobile);
   }, []);
 
-  // Reset current card index when products change
+  // Normalize product URLs and reset current card index when products change
   useEffect(() => {
+    const normalizePhLink = (link) => {
+      if (!link) return null;
+      let normalized = link.trim();
+      if (normalized.includes('/posts/')) {
+        normalized = normalized.replace('/posts/', '/products/');
+      }
+      // Use product overview URL instead of launches
+      if (normalized.endsWith('/launches')) {
+        normalized = normalized.replace('/launches', '');
+      }
+      try {
+        new URL(normalized);
+        return normalized;
+      } catch {
+        return null;
+      }
+    };
+
+    const updatedProducts = products.map(product => ({
+      ...product,
+      phLink: normalizePhLink(product.phLink || product.productHuntLink)
+    }));
+    setNormalizedProducts(updatedProducts);
     setCurrentCardIndex(0);
   }, [products]);
 
   // Handle next card after swipe
   const handleNextCard = () => {
     setCurrentCardIndex(prevIndex => {
-      if (prevIndex >= products.length - 1) {
-        return prevIndex; // Stop at the last card
+      if (prevIndex >= normalizedProducts.length - 1) {
+        return prevIndex;
       }
       return prevIndex + 1;
     });
   };
 
-  if (!products || products.length === 0) {
+  if (!normalizedProducts || normalizedProducts.length === 0) {
     return (
       <div className="text-center py-16">
         <div className="text-6xl mb-6">🔍</div>
@@ -52,9 +87,9 @@ function ProductList({ products, selectedCategory, selectedStatus, selectedSort,
             : 'All Products'}
           {selectedStatus !== 'all' && ` (${selectedStatus})`}
         </h2>
-        <p className="text-gray-600">Showing {products.length} product{products.length !== 1 ? 's' : ''}</p>
+        <p className="text-gray-600">Showing {normalizedProducts.length} product{normalizedProducts.length !== 1 ? 's' : ''}</p>
       </div>
-      {isMobile && currentCardIndex >= products.length ? (
+      {isMobile && currentCardIndex >= normalizedProducts.length ? (
         <div className="text-center py-16">
           <div className="text-6xl mb-6">✅</div>
           <h3 className="text-2xl font-semibold text-gray-900 mb-4">No more products to review</h3>
@@ -64,7 +99,7 @@ function ProductList({ products, selectedCategory, selectedStatus, selectedSort,
         </div>
       ) : (
         <div className={`${isMobile ? 'mobile-admin-swipe-container relative min-h-[450px]' : 'grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6'}`}>
-          {products.map((product, index) => (
+          {normalizedProducts.map((product, index) => (
             <div 
               key={product.id} 
               className={`${isMobile ? `admin-swipe-card-container absolute top-0 w-[95%] left-[2.5%] ${index === currentCardIndex ? 'block' : 'hidden'}` : ''}`}
@@ -87,22 +122,17 @@ function ProductList({ products, selectedCategory, selectedStatus, selectedSort,
 }
 
 function ProductCard({ product, formatDate, onEnrich, onStatusChange, onSwipeComplete, isMobile, selectedStatus }) {
-  const [upvotes, setUpvotes] = useState(product.upvotes || 0);
-  const [isUpvoting, setIsUpvoting] = useState(false);
+  const [upvotes, setUpvotes] = useState(product.upvotes || product.phUpvotes || 'N/A');
+  const [isFetchingUpvotes, setIsFetchingUpvotes] = useState(true);
+  const [fetchError, setFetchError] = useState(null);
   const [isEnriching, setIsEnriching] = useState(false);
   const [enrichError, setEnrichError] = useState(null);
   const [enrichedData, setEnrichedData] = useState(product.linkedInData || null);
-  const [hasVoted, setHasVoted] = useState(() => {
-    try {
-      const voted = JSON.parse(localStorage.getItem('phf_voted') || '{}');
-      return !!voted[product.id];
-    } catch {
-      return false;
-    }
-  });
   const [swipeDirection, setSwipeDirection] = useState(null);
   const [swipeAction, setSwipeAction] = useState(null);
   const [isProcessing, setIsProcessing] = useState(false);
+
+  const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000';
 
   const getCategoryDisplayName = (category) => {
     return category
@@ -114,10 +144,7 @@ function ProductCard({ product, formatDate, onEnrich, onStatusChange, onSwipeCom
   };
 
   const getCategoryBadgeClasses = (category) => {
-    if (category === 'artificial-intelligence' || category === 'developer-tools') {
-      return 'category-badge artificial-intelligence';
-    }
-    return 'category-badge bg-gray-100 text-gray-700';
+    return 'category-badge bg-orange-100 text-orange-800';
   };
 
   const getStatusBadgeClasses = (status) => {
@@ -133,30 +160,67 @@ function ProductCard({ product, formatDate, onEnrich, onStatusChange, onSwipeCom
     }
   };
 
-  const handleUpvote = async () => {
-    if (isUpvoting) return;
-    setIsUpvoting(true);
+  // Debounced fetch with retry logic for upvotes
+  const debouncedFetchPhUpvotes = debounce(async (retries = 3, delay = 5000) => {
     try {
-      const endpoint = hasVoted ? 'unvote' : 'upvote';
-      const response = await fetch(`/api/products/${product.id}/${endpoint}`, { method: 'POST' });
+      const phLink = product.phLink || product.productHuntLink;
+      if (!phLink || !product.id) {
+        throw new Error(`Missing required fields: phLink=${phLink}, id=${product.id}`);
+      }
+
+      // Use cached upvotes if available
+      if (product.upvotes !== undefined && product.upvotes !== null) {
+        setUpvotes(product.upvotes);
+        setIsFetchingUpvotes(false);
+        return;
+      }
+
+      const response = await fetch(`${API_BASE_URL}/api/ph-upvotes?url=${encodeURIComponent(phLink)}&productId=${encodeURIComponent(product.id)}`, {
+        headers: { 'Content-Type': 'application/json' }
+      });
+
+      if (response.status === 429 && retries > 0) {
+        setFetchError('Rate limit exceeded, retrying...');
+        console.log(`Rate limit hit for ${product.name}, retrying after ${delay}ms (${retries} retries left)`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+        return debouncedFetchPhUpvotes(retries - 1, delay * 2);
+      }
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(`API error: ${response.status} ${errorData.error?.details || errorData.error || 'Unknown error'}`);
+      }
+
       const data = await response.json();
       if (data.success) {
         setUpvotes(data.upvotes);
-        setHasVoted(!hasVoted);
-        const voted = JSON.parse(localStorage.getItem('phf_voted') || '{}');
-        if (hasVoted) {
-          delete voted[product.id];
-        } else {
-          voted[product.id] = true;
-        }
-        localStorage.setItem('phf_voted', JSON.stringify(voted));
+        setFetchError(null);
+      } else {
+        throw new Error(data.error?.message || 'Failed to fetch upvotes');
       }
     } catch (error) {
-      console.error('Vote toggle error:', error.message || error);
+      console.error(`Error fetching PH upvotes for ${product.name}: ${error.message}`, { phLink: product.phLink, id: product.id });
+      setFetchError(
+        error.message.includes('401') ? 'Invalid Product Hunt API token' :
+        error.message.includes('429') ? 'Rate limit exceeded, please try again later' :
+        error.message.includes('Invalid Product Hunt URL') ? 'Invalid Product Hunt URL' :
+        'Failed to fetch upvotes'
+      );
+      setUpvotes(product.upvotes || product.phUpvotes || 'N/A');
     } finally {
-      setIsUpvoting(false);
+      setIsFetchingUpvotes(false);
     }
-  };
+  }, 500);
+
+  useEffect(() => {
+    if (product.phLink || product.productHuntLink) {
+      debouncedFetchPhUpvotes();
+    } else {
+      setFetchError('No Product Hunt link available');
+      setIsFetchingUpvotes(false);
+      setUpvotes('N/A');
+    }
+  }, [product.id, product.phLink, product.productHuntLink, product.name, product.upvotes]);
 
   const isValidLinkedInUrl = product.linkedin &&
     typeof product.linkedin === 'string' &&
@@ -170,13 +234,9 @@ function ProductCard({ product, formatDate, onEnrich, onStatusChange, onSwipeCom
     setEnrichError(null);
     
     try {
-      const API_URL = '/api/linkedin/companies';
-      
-      const response = await fetch(API_URL, {
+      const response = await fetch(`${API_BASE_URL}/api/linkedin/companies`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ linkedin_url: product.linkedin })
       });
       
@@ -209,11 +269,9 @@ function ProductCard({ product, formatDate, onEnrich, onStatusChange, onSwipeCom
         growth_stage: companyData.growth_stage
       };
       
-      const persistResponse = await fetch(`/api/products/${product.id}`, {
+      const persistResponse = await fetch(`${API_BASE_URL}/api/products/${product.id}`, {
         method: 'PATCH',
-        headers: {
-          'Content-Type': 'application/json'
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ linkedInData: extracted })
       });
       
@@ -255,11 +313,9 @@ function ProductCard({ product, formatDate, onEnrich, onStatusChange, onSwipeCom
     if (isProcessing) return;
     setIsProcessing(true);
     try {
-      const response = await fetch(`/api/products/${product.id}`, {
+      const response = await fetch(`${API_BASE_URL}/api/products/${product.id}`, {
         method: 'PATCH',
-        headers: {
-          'Content-Type': 'application/json'
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status })
       });
       
@@ -290,19 +346,16 @@ function ProductCard({ product, formatDate, onEnrich, onStatusChange, onSwipeCom
   const handleSwipe = (direction) => {
     if (isProcessing) return;
 
-    // Handle swipe based on selectedStatus and current product status
     if (selectedStatus === 'rejected' && product.status === 'rejected') {
       if (direction === 'right') {
         setSwipeDirection(direction);
         updateProductStatus('approved');
       }
-      // Left swipe does nothing for rejected cards
     } else if (selectedStatus === 'approved' && product.status === 'approved') {
       if (direction === 'left') {
         setSwipeDirection(direction);
         updateProductStatus('rejected');
       }
-      // Right swipe does nothing for approved cards
     } else if (selectedStatus === 'pending' && product.status === 'pending') {
       if (direction === 'left') {
         setSwipeDirection(direction);
@@ -531,66 +584,21 @@ function ProductCard({ product, formatDate, onEnrich, onStatusChange, onSwipeCom
           </div>
         </div>
       )}
-      <div className="px-4 py-2 bg-gray-50 border-b border-gray-200 rounded-md shadow-sm mt-2">
-        <div className="flex items-center gap-4">
-          {isValidLinkedInUrl && (
-            <div className="flex items-center">
-              <svg className="w-4 h-4 text-[#0077b5] mr-2" fill="currentColor" viewBox="0 0 24 24">
-                <path d="M19 0h-14c-2.761 0-5 2.239-5 5v14c0 2.761 2.239 5 5 5h14c2.762 0 5-2.239 5-5v-14c0-2.761-2.238-5-5-5zm-11 19h-3v-11h3v11zm-1.5-12.268c-.966 0-1.75-.79-1.75-1.764s.784-1.764 1.75-1.764 1.75.79 1.75 1.764-.783 1.764-1.75 1.764zm13.5 12.268h-3v-5.604c0-3.368-4-3.113-4 0v5.604h-3v-11h3v1.765c1.396-2.586 7-2.777 7 2.476v6.759z"/>
-              </svg>
-              <a
-                href={product.linkedin}
-                target="_blank"
-                rel="noopener noreferrer"
-                className={`text-${isMobile ? 'xs' : 'sm'} text-[#0077b5] hover:underline font-medium transition-colors duration-200`}
-              >
-                LinkedIn
-              </a>
-              <button
-                onClick={handleEnrichLinkedIn}
-                disabled={isEnriching || !!displayData}
-                className={`ml-2 px-2 py-1 text-xs font-medium rounded-md shadow-sm ${!!displayData ? 'bg-green-100 text-green-700 cursor-default' : isEnriching ? 'bg-blue-100 text-blue-700 animate-pulse' : 'bg-blue-500 text-white hover:bg-blue-600'}`}
-                title={!!displayData ? 'Already enriched' : 'Enrich LinkedIn profile'}
-              >
-                {!!displayData ? '✓ Enriched' : isEnriching ? 'Enriching...' : 'Enrich LinkedIn'}
-              </button>
-              {enrichError && <span className="text-xs text-red-500 ml-2">{enrichError}</span>}
-            </div>
-          )}
-          {product.phGithub && (
-            <div className="flex items-center">
-              <svg className="w-4 h-4 text-gray-900 mr-2" fill="currentColor" viewBox="0 0 24 24">
-                <path d="M12 0a12 12 0 00-3.79 23.39c.6.11.82-.26.82-.58v-2.06c-3.34.73-4.04-1.61-4.04-1.61-.55-1.39-1.34-1.76-1.34-1.76-1.09-.74.08-.73.08-.73 1.21.09 1.85 1.24 1.85 1.24 1.07 1.83 2.81 1.3 3.5.99.11-.78.42-1.3.76-1.6-2.66-.3-5.46-1.33-5.46-5.93 0-1.31.47-2.38 1.24-3.22-.12-.3-.54-1.52.12-3.17 0 0 1.01-.32 3.3 1.23a11.49 11.49 0 016.01 0c2.29-1.55 3.3-1.23 3.3-1.23.66 1.65.24 2.87.12 3.17.77.84 1.24 1.91 1.24 3.22 0 4.61-2.81 5.63-5.48 5.93.43.37.81 1.1.81 2.22v3.29c0 .32.22.69.82.58A12 12 0 0012 0z"/>
-              </svg>
-              <a
-                href={product.phGithub}
-                target="_blank"
-                rel="noopener noreferrer"
-                className={`text-${isMobile ? 'xs' : 'sm'} text-gray-900 hover:underline font-medium transition-colors duration-200`}
-              >
-                GitHub
-              </a>
-            </div>
-          )}
+      {fetchError && (
+        <div className="px-4 py-1 text-xs text-red-500">
+          {fetchError}
         </div>
-      </div>
+      )}
       <div className="px-4 py-2 flex justify-between items-center mt-2 sticky bottom-0 bg-gradient-to-t from-white to-transparent">
         <div className="flex items-center gap-4">
-          <button
-            onClick={handleUpvote}
-            disabled={isUpvoting}
-            className={`flex items-center justify-center px-3 py-1 rounded-full border transition-all duration-200 shadow-sm ${
-              hasVoted
-                ? 'bg-orange-500 text-white border-orange-500 hover:bg-orange-600'
-                : 'bg-gray-100 text-gray-700 border-gray-200 hover:bg-gray-200'
-            } ${isUpvoting ? 'opacity-50 cursor-not-allowed' : 'hover:transform hover:scale-105'}`}
-            title={hasVoted ? 'Remove Upvote' : 'Upvote'}
-          >
-            <svg className="w-5 h-5 mr-1" fill={hasVoted ? 'currentColor' : 'none'} stroke={hasVoted ? 'none' : 'currentColor'} viewBox="0 0 24 24">
+          <div className="flex items-center justify-center px-3 py-1 rounded-full border bg-gray-100 text-gray-700 border-gray-200 shadow-sm">
+            <svg className="w-5 h-5 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 15l7-7 7 7"/>
             </svg>
-            <span className="text-sm font-medium">{upvotes}</span>
-          </button>
+            <span className="text-sm font-medium">
+              {isFetchingUpvotes ? 'Loading...' : `↑ ${upvotes}`}
+            </span>
+          </div>
           <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium border shadow-sm ${getStatusBadgeClasses(product.status)}`}>
             {product.status ? product.status.charAt(0).toUpperCase() + product.status.slice(1) : 'Unknown'}
           </span>
@@ -618,14 +626,20 @@ function ProductCard({ product, formatDate, onEnrich, onStatusChange, onSwipeCom
               </button>
             </>
           )}
-          <a
-            href={product.phLink || product.productHuntLink}
-            target="_blank"
-            rel="noopener noreferrer"
-            className={`text-${isMobile ? 'xs' : 'sm'} text-gray-600 hover:text-gray-900 font-medium hover:underline transition-colors duration-200 px-3 py-1 bg-orange-50 rounded-md shadow-sm`}
-          >
-            View on Product Hunt
-          </a>
+          {(product.phLink || product.productHuntLink) ? (
+            <a
+              href={product.phLink || product.productHuntLink}
+              target="_blank"
+              rel="noopener noreferrer"
+              className={`text-${isMobile ? 'xs' : 'sm'} text-gray-600 hover:text-gray-900 font-medium hover:underline transition-colors duration-200 px-3 py-1 bg-orange-50 rounded-md shadow-sm`}
+            >
+              View on Product Hunt
+            </a>
+          ) : (
+            <span className={`text-${isMobile ? 'xs' : 'sm'} text-gray-400 font-medium px-3 py-1 bg-orange-50 rounded-md shadow-sm cursor-not-allowed`}>
+              No Product Hunt Link
+            </span>
+          )}
         </div>
       </div>
       {isMobile && (
@@ -646,6 +660,45 @@ function ProductCard({ product, formatDate, onEnrich, onStatusChange, onSwipeCom
           )}
         </div>
       )}
+      {isValidLinkedInUrl && (
+        <div className="px-4 py-2 flex items-center">
+          <svg className="w-4 h-4 text-[#0077b5] mr-2" fill="currentColor" viewBox="0 0 24 24">
+            <path d="M19 0h-14c-2.761 0-5 2.239-5 5v14c0 2.761 2.239 5 5 5h14c2.762 0 5-2.239 5-5v-14c0-2.761-2.238-5-5-5zm-11 19h-3v-11h3v11zm-1.5-12.268c-.966 0-1.75-.79-1.75-1.764s.784-1.764 1.75-1.764 1.75.79 1.75 1.764-.783 1.764-1.75 1.764zm13.5 12.268h-3v-5.604c0-3.368-4-3.113-4 0v5.604h-3v-11h3v1.765c1.396-2.586 7-2.777 7 2.476v6.759z"/>
+          </svg>
+          <a
+            href={product.linkedin}
+            target="_blank"
+            rel="noopener noreferrer"
+            className={`text-${isMobile ? 'xs' : 'sm'} text-[#0077b5] hover:underline font-medium transition-colors duration-200`}
+          >
+            LinkedIn
+          </a>
+          <button
+            onClick={handleEnrichLinkedIn}
+            disabled={isEnriching || !!displayData}
+            className={`ml-2 px-2 py-1 text-xs font-medium rounded-md shadow-sm ${!!displayData ? 'bg-green-100 text-green-700 cursor-default' : isEnriching ? 'bg-blue-100 text-blue-700 animate-pulse' : 'bg-blue-500 text-white hover:bg-blue-600'}`}
+            title={!!displayData ? 'Already enriched' : 'Enrich LinkedIn profile'}
+          >
+            {!!displayData ? '✓ Enriched' : isEnriching ? 'Enriching...' : 'Enrich LinkedIn'}
+          </button>
+          {enrichError && <span className="text-xs text-red-500 ml-2">{enrichError}</span>}
+        </div>
+      )}
+      {product.phGithub && (
+        <div className="px-4 py-2 flex items-center">
+          <svg className="w-4 h-4 text-gray-900 mr-2" fill="currentColor" viewBox="0 0 24 24">
+            <path d="M12 0a12 12 0 00-3.79 23.39c.6.11.82-.26.82-.58v-2.06c-3.34.73-4.04-1.61-4.04-1.61-.55-1.39-1.34-1.76-1.34-1.76-1.09-.74.08-.73.08-.73 1.21.09 1.85 1.24 1.85 1.24 1.07 1.83 2.81 1.3 3.5.99.11-.78.42-1.3.76-1.6-2.66-.3-5.46-1.33-5.46-5.93 0-1.31.47-2.38 1.24-3.22-.12-.3-.54-1.52.12-3.17 0 0 1.01-.32 3.3 1.23a11.49 11.49 0 016.01 0c2.29-1.55 3.3-1.23 3.3-1.23.66 1.65.24 2.87.12 3.17.77.84 1.24 1.91 1.24 3.22 0 4.61-2.81 5.63-5.48 5.93.43.37.81 1.1.81 2.22v3.29c0 .32.22.69.82.58A12 12 0 0012 0z"/>
+          </svg>
+          <a
+            href={product.phGithub}
+            target="_blank"
+            rel="noopener noreferrer"
+            className={`text-${isMobile ? 'xs' : 'sm'} text-gray-900 hover:underline font-medium transition-colors duration-200`}
+          >
+            GitHub
+          </a>
+        </div>
+      )}
     </div>
   );
 }
@@ -659,6 +712,7 @@ ProductList.propTypes = {
       category: PropTypes.string,
       status: PropTypes.string,
       upvotes: PropTypes.number,
+      phUpvotes: PropTypes.number, // Backward compatibility
       phTopics: PropTypes.arrayOf(PropTypes.string),
       dayRank: PropTypes.string,
       companyWebsite: PropTypes.string,
@@ -692,6 +746,7 @@ ProductCard.propTypes = {
     category: PropTypes.string,
     status: PropTypes.string,
     upvotes: PropTypes.number,
+    phUpvotes: PropTypes.number, // Backward compatibility
     phTopics: PropTypes.arrayOf(PropTypes.string),
     dayRank: PropTypes.string,
     companyWebsite: PropTypes.string,
