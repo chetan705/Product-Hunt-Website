@@ -163,7 +163,7 @@ class DatabaseService {
         phLink: productData.phLink,
         makerName: productData.makerName || null,
         linkedin: productData.linkedin || null,
-        upvotes: productData.upvotes || 0,
+        phUpvotes: productData.phUpvotes || 0, // Use phUpvotes instead of upvotes
         phVotes: productData.phVotes || 0,
         phDayRank: productData.phDayRank || null,
         phTopics: productData.phTopics || [],
@@ -383,6 +383,7 @@ class DatabaseService {
         approvedProducts: products.filter(p => p.status === 'approved').length,
         syncedToSheets: products.filter(p => p.syncedToSheets === true).length,
         needingSheetsSync: products.filter(p => p.status === 'approved' && !p.syncedToSheets).length,
+        totalUpvotes: products.reduce((sum, p) => sum + (p.phUpvotes || p.upvotes || 0), 0), // Use phUpvotes, fallback to upvotes
         byCategory: {},
         byStatus: {},
         lastUpdated: products.length > 0 ? products[0].createdAt : null
@@ -396,40 +397,7 @@ class DatabaseService {
       return stats;
     } catch (error) {
       console.error('Error getting stats:', error.message);
-      return { totalProducts: 0, byCategory: {}, byStatus: {} };
-    }
-  }
-
-  async upvoteProduct(productId) {
-    try {
-      const data = await this.readLocalData();
-      
-      if (!data.products[productId]) {
-        return {
-          success: false,
-          error: 'Product not found'
-        };
-      }
-
-      if (!data.products[productId].upvotes) {
-        data.products[productId].upvotes = 0;
-      }
-
-      data.products[productId].upvotes += 1;
-      data.products[productId].updatedAt = new Date().toISOString();
-
-      await this.writeLocalData(data);
-      
-      return {
-        success: true,
-        upvotes: data.products[productId].upvotes
-      };
-    } catch (error) {
-      console.error(`Error upvoting product ${productId}:`, error.message);
-      return {
-        success: false,
-        error: error.message
-      };
+      return { totalProducts: 0, byCategory: {}, byStatus: {}, totalUpvotes: 0 };
     }
   }
 
@@ -480,7 +448,7 @@ class DatabaseService {
         if (pattern === 'product:*') {
           data.productList.forEach(id => keys.push(`product:${id}`));
         }
-      } else if (pattern.startsWith('linkedin_cache:') || pattern.startsWith('ph_enrichment_cache:')) {
+      } else if (pattern.startsWith('linkedin_cache:') || key.startsWith('ph_enrichment_cache:')) {
         Object.keys(data.cache).forEach(key => {
           if (this.matchPattern(key, pattern)) {
             keys.push(key);
@@ -567,40 +535,6 @@ class DatabaseService {
     } catch (error) {
       console.error('Error updating product fields:', error.message);
       return null;
-    }
-  }
-
-  async unvoteProduct(productId) {
-    try {
-      const data = await this.readLocalData();
-
-      if (!data.products[productId]) {
-        return {
-          success: false,
-          error: 'Product not found'
-        };
-      }
-
-      if (!data.products[productId].upvotes) {
-        data.products[productId].upvotes = 0;
-      }
-
-      data.products[productId].upvotes = Math.max(0, (data.products[productId].upvotes || 0) - 1);
-      data.products[productId].updatedAt = new Date().toISOString();
-
-      await this.writeLocalData(data);
-
-      console.log(`Unvoted product: ${data.products[productId].name}, upvotes: ${data.products[productId].upvotes}`);
-      return {
-        success: true,
-        upvotes: data.products[productId].upvotes
-      };
-    } catch (error) {
-      console.error(`Error unvoting product ${productId}:`, error.message);
-      return {
-        success: false,
-        error: error.message
-      };
     }
   }
 }
