@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import PropTypes from 'prop-types';
 import { useSwipeable } from 'react-swipeable';
 
-function ProductList({ products, selectedCategory, selectedStatus, selectedSort, formatDate, onEnrich }) {
+function ProductList({ products, selectedCategory, selectedStatus, selectedSort, formatDate, onEnrich, onStatusChange }) {
   const [currentCardIndex, setCurrentCardIndex] = useState(0);
   const [isMobile, setIsMobile] = useState(false);
 
@@ -14,11 +14,16 @@ function ProductList({ products, selectedCategory, selectedStatus, selectedSort,
     return () => window.removeEventListener('resize', checkMobile);
   }, []);
 
+  // Reset current card index when products change
+  useEffect(() => {
+    setCurrentCardIndex(0);
+  }, [products]);
+
   // Handle next card after swipe
   const handleNextCard = () => {
     setCurrentCardIndex(prevIndex => {
       if (prevIndex >= products.length - 1) {
-        return 0; // Loop back
+        return prevIndex; // Stop at the last card
       }
       return prevIndex + 1;
     });
@@ -49,26 +54,39 @@ function ProductList({ products, selectedCategory, selectedStatus, selectedSort,
         </h2>
         <p className="text-gray-600">Showing {products.length} product{products.length !== 1 ? 's' : ''}</p>
       </div>
-      <div className={`${isMobile ? 'relative min-h-[500px]' : 'grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6'}`}>
-        {products.map((product, index) => (
-          <div 
-            key={product.id} 
-            className={`${isMobile ? `absolute top-0 left-0 right-0 ${index === currentCardIndex ? 'block' : 'hidden'}` : ''}`}
-          >
-            <ProductCard 
-              product={product} 
-              formatDate={formatDate} 
-              onEnrich={onEnrich}
-              onSwipeComplete={isMobile ? handleNextCard : undefined}
-            />
-          </div>
-        ))}
-      </div>
+      {isMobile && currentCardIndex >= products.length ? (
+        <div className="text-center py-16">
+          <div className="text-6xl mb-6">✅</div>
+          <h3 className="text-2xl font-semibold text-gray-900 mb-4">No more products to review</h3>
+          <p className="text-gray-600 max-w-md mx-auto">
+            You've reviewed all {selectedStatus !== 'all' ? selectedStatus : ''} products. Try adjusting filters or fetching new products.
+          </p>
+        </div>
+      ) : (
+        <div className={`${isMobile ? 'mobile-admin-swipe-container relative min-h-[450px]' : 'grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6'}`}>
+          {products.map((product, index) => (
+            <div 
+              key={product.id} 
+              className={`${isMobile ? `admin-swipe-card-container absolute top-0 w-[95%] left-[2.5%] ${index === currentCardIndex ? 'block' : 'hidden'}` : ''}`}
+            >
+              <ProductCard 
+                product={product} 
+                formatDate={formatDate} 
+                onEnrich={onEnrich}
+                onStatusChange={onStatusChange}
+                onSwipeComplete={isMobile ? handleNextCard : undefined}
+                isMobile={isMobile}
+                selectedStatus={selectedStatus}
+              />
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
 
-function ProductCard({ product, formatDate, onEnrich, onSwipeComplete }) {
+function ProductCard({ product, formatDate, onEnrich, onStatusChange, onSwipeComplete, isMobile, selectedStatus }) {
   const [upvotes, setUpvotes] = useState(product.upvotes || 0);
   const [isUpvoting, setIsUpvoting] = useState(false);
   const [isEnriching, setIsEnriching] = useState(false);
@@ -82,10 +100,9 @@ function ProductCard({ product, formatDate, onEnrich, onSwipeComplete }) {
       return false;
     }
   });
-  
-  // For mobile swipe functionality
   const [swipeDirection, setSwipeDirection] = useState(null);
   const [swipeAction, setSwipeAction] = useState(null);
+  const [isProcessing, setIsProcessing] = useState(false);
 
   const getCategoryDisplayName = (category) => {
     return category
@@ -192,7 +209,6 @@ function ProductCard({ product, formatDate, onEnrich, onSwipeComplete }) {
         growth_stage: companyData.growth_stage
       };
       
-      // Persist to backend
       const persistResponse = await fetch(`/api/products/${product.id}`, {
         method: 'PATCH',
         headers: {
@@ -210,14 +226,13 @@ function ProductCard({ product, formatDate, onEnrich, onSwipeComplete }) {
         onEnrich(product.id, extracted);
       }
       
-      // If swipe triggered, handle animation
       if (swipeDirection === 'up') {
         setSwipeAction('enriched');
         setTimeout(() => {
           setSwipeDirection(null);
           setSwipeAction(null);
           if (onSwipeComplete) onSwipeComplete();
-        }, 1000);
+        }, 500);
       }
     } catch (error) {
       console.error('LinkedIn enrichment error:', error);
@@ -229,39 +244,16 @@ function ProductCard({ product, formatDate, onEnrich, onSwipeComplete }) {
           setSwipeDirection(null);
           setSwipeAction(null);
           if (onSwipeComplete) onSwipeComplete();
-        }, 1000);
+        }, 500);
       }
     } finally {
       setIsEnriching(false);
     }
   };
 
-  // Handle swipe gestures
-  const handleSwipe = (direction) => {
-    setSwipeDirection(direction);
-    if (direction === 'up' && isValidLinkedInUrl && !isEnriching) {
-      handleEnrichLinkedIn();
-    } else if (direction === 'left') {
-      setSwipeAction('reject');
-      updateProductStatus('rejected');
-      setTimeout(() => {
-        setSwipeDirection(null);
-        setSwipeAction(null);
-        if (onSwipeComplete) onSwipeComplete();
-      }, 1000);
-    } else if (direction === 'right') {
-      setSwipeAction('accept');
-      updateProductStatus('approved');
-      setTimeout(() => {
-        setSwipeDirection(null);
-        setSwipeAction(null);
-        if (onSwipeComplete) onSwipeComplete();
-      }, 1000);
-    }
-  };
-
-  // Function to update product status
   const updateProductStatus = async (status) => {
+    if (isProcessing) return;
+    setIsProcessing(true);
     try {
       const response = await fetch(`/api/products/${product.id}`, {
         method: 'PATCH',
@@ -273,10 +265,74 @@ function ProductCard({ product, formatDate, onEnrich, onSwipeComplete }) {
       
       if (!response.ok) {
         const errorText = await response.text();
-        console.error(`Failed to update product status: ${errorText}`);
+        throw new Error(`Failed to update product status: ${errorText}`);
+      }
+      
+      if (onStatusChange) {
+        onStatusChange(product.id, status);
+      }
+      
+      if (swipeDirection) {
+        setSwipeAction(status === 'approved' ? 'accept' : 'reject');
+        setTimeout(() => {
+          setSwipeDirection(null);
+          setSwipeAction(null);
+          if (onSwipeComplete) onSwipeComplete();
+        }, 500);
       }
     } catch (error) {
       console.error('Error updating product status:', error);
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  const handleSwipe = (direction) => {
+    if (isProcessing) return;
+
+    // Handle swipe based on selectedStatus and current product status
+    if (selectedStatus === 'rejected' && product.status === 'rejected') {
+      if (direction === 'right') {
+        setSwipeDirection(direction);
+        updateProductStatus('approved');
+      }
+      // Left swipe does nothing for rejected cards
+    } else if (selectedStatus === 'approved' && product.status === 'approved') {
+      if (direction === 'left') {
+        setSwipeDirection(direction);
+        updateProductStatus('rejected');
+      }
+      // Right swipe does nothing for approved cards
+    } else if (selectedStatus === 'pending' && product.status === 'pending') {
+      if (direction === 'left') {
+        setSwipeDirection(direction);
+        updateProductStatus('rejected');
+      } else if (direction === 'right') {
+        setSwipeDirection(direction);
+        updateProductStatus('approved');
+      } else if (direction === 'up' && isValidLinkedInUrl && !isEnriching) {
+        setSwipeDirection(direction);
+        handleEnrichLinkedIn();
+      }
+    } else if (selectedStatus === 'all') {
+      if (product.status === 'rejected' && direction === 'right') {
+        setSwipeDirection(direction);
+        updateProductStatus('approved');
+      } else if (product.status === 'approved' && direction === 'left') {
+        setSwipeDirection(direction);
+        updateProductStatus('rejected');
+      } else if (product.status === 'pending') {
+        if (direction === 'left') {
+          setSwipeDirection(direction);
+          updateProductStatus('rejected');
+        } else if (direction === 'right') {
+          setSwipeDirection(direction);
+          updateProductStatus('approved');
+        } else if (direction === 'up' && isValidLinkedInUrl && !isEnriching) {
+          setSwipeDirection(direction);
+          handleEnrichLinkedIn();
+        }
+      }
     }
   };
 
@@ -350,11 +406,11 @@ function ProductCard({ product, formatDate, onEnrich, onSwipeComplete }) {
 
   return (
     <div 
-      {...swipeHandlers}
-      className="product-card bg-gradient-to-br from-white to-[#fef7f5] rounded-xl shadow-md border border-gray-200 overflow-y-auto p-4 space-y-2 w-full h-full hover:shadow-lg transition-all duration-200"
-      style={getSwipeCardStyle()}
+      {...(isMobile ? swipeHandlers : {})}
+      className={`product-card admin-swipe-card bg-gradient-to-br from-white to-[#fef7f5] rounded-xl shadow-md border border-gray-200 overflow-y-auto p-4 space-y-2 w-full ${isMobile ? 'h-[450px]' : 'h-[400px]'} hover:shadow-lg transition-all duration-200 relative`}
+      style={isMobile ? getSwipeCardStyle() : {}}
     >
-      {renderSwipeOverlay()}
+      {isMobile && renderSwipeOverlay()}
       <div className="card-header relative">
         <div className="flex items-center gap-2 mb-2">
           {product.thumbnail?.url ? (
@@ -363,26 +419,31 @@ function ProductCard({ product, formatDate, onEnrich, onSwipeComplete }) {
               src={product.thumbnail.url}
               alt={`${product.name || 'Product'} thumbnail`}
               className="rounded-lg shadow-sm"
-              style={{ width: '36px', height: '36px' }}
+              style={{ width: isMobile ? '28px' : '36px', height: isMobile ? '28px' : '36px' }}
             />
           ) : (
-            <div className="w-9 h-9 bg-gray-200 rounded-lg flex items-center justify-center shadow-sm">
+            <div className={`w-${isMobile ? '7' : '9'} h-${isMobile ? '7' : '9'} bg-gray-200 rounded-lg flex items-center justify-center shadow-sm`}>
               <svg className="w-5 h-5 text-gray-400" fill="currentColor" viewBox="0 0 24 24">
                 <path d="M4 4h7a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zm0 9h7V6H4v7zm14-9h-4v2h4v12H8v-4H6v4a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2zm-5 4h-2v4H8v2h3v4h2v-4h3v-2h-3V8z"/>
               </svg>
             </div>
           )}
-          <h3 className="text-lg font-semibold text-gray-800">{product.name || 'Untitled Product'}</h3>
+          <h3 className={`text-${isMobile ? 'base' : 'lg'} font-semibold text-gray-800`}>{product.name || 'Untitled Product'}</h3>
         </div>
         <div className="flex flex-wrap gap-2">
           <span className={`inline-block ${getCategoryBadgeClasses(product.category)} text-xs px-2 py-1 rounded-md shadow-sm`}>
             {getCategoryDisplayName(product.category)}
           </span>
+          {product.launchLabel && (
+            <span className="inline-block bg-orange-100 text-orange-800 text-xs px-2 py-1 rounded-md shadow-sm">
+              {product.launchLabel}
+            </span>
+          )}
         </div>
       </div>
-      <div className="card-body space-y-2">
+      <div className="card-body space-y-2 overflow-y-auto" style={{ maxHeight: displayData ? '100px' : '150px' }}>
         {product.description && (
-          <p className="text-gray-600 text-sm max-h-32 overflow-y-auto">{product.description || 'No description available.'}</p>
+          <p className={`text-gray-600 text-${isMobile ? 'xs' : 'sm'} max-h-32`}>{product.description || 'No description available.'}</p>
         )}
         {product.phTopics && product.phTopics.length > 0 && (
           <div className="flex flex-wrap gap-2">
@@ -395,14 +456,14 @@ function ProductCard({ product, formatDate, onEnrich, onSwipeComplete }) {
         )}
       </div>
       <div className="py-2 bg-orange-50 border border-orange-100 rounded-lg shadow-sm">
-        <h4 className="text-sm font-semibold text-gray-900 mb-2 flex items-center px-4">
+        <h4 className={`text-${isMobile ? 'xs' : 'sm'} font-semibold text-gray-900 mb-2 flex items-center px-4`}>
           <svg className="w-4 h-4 mr-2 text-orange-500" fill="currentColor" viewBox="0 0 24 24">
             <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/>
           </svg>
           Company Information
         </h4>
         <div className="space-y-2 px-4">
-          <div className="text-sm text-gray-700 font-medium">
+          <div className={`text-${isMobile ? 'xs' : 'sm'} text-gray-700 font-medium`}>
             {product.companyWebsite ? (
               <a
                 href={product.companyWebsite}
@@ -426,23 +487,22 @@ function ProductCard({ product, formatDate, onEnrich, onSwipeComplete }) {
             </div>
           )}
           {product.makerName && (
-            <div className="text-sm text-gray-700 font-medium">
+            <div className={`text-${isMobile ? 'xs' : 'sm'} text-gray-700 font-medium`}>
               Maker: {product.makerName}
             </div>
           )}
         </div>
       </div>
       
-      {/* LinkedIn Enriched Data Display */}
       {displayData && (
-        <div className="py-2 bg-blue-50 border border-blue-100 rounded-lg shadow-sm">
-          <h4 className="text-sm font-semibold text-gray-900 mb-2 flex items-center px-4">
+        <div className="py-2 bg-blue-50 border border-blue-100 rounded-lg shadow-sm overflow-y-auto enriched-data" style={{ maxHeight: '150px' }}>
+          <h4 className={`text-${isMobile ? 'xs' : 'sm'} font-semibold text-gray-900 mb-2 flex items-center px-4`}>
             <svg className="w-4 h-4 mr-2 text-blue-500" fill="currentColor" viewBox="0 0 24 24">
               <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/>
             </svg>
             Enriched Data
           </h4>
-          <div className="space-y-1 px-4 text-sm text-gray-700 max-h-60 overflow-y-auto">
+          <div className={`space-y-1 px-4 text-${isMobile ? 'xs' : 'sm'} text-gray-700`}>
             <p>Operating Status: {displayData.operating_status || 'N/A'}</p>
             <p>Regions: {displayData.regions?.join(', ') || 'N/A'}</p>
             <p>Founded Year: {displayData.founded_year || 'N/A'}</p>
@@ -482,7 +542,7 @@ function ProductCard({ product, formatDate, onEnrich, onSwipeComplete }) {
                 href={product.linkedin}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="text-sm text-[#0077b5] hover:underline font-medium transition-colors duration-200"
+                className={`text-${isMobile ? 'xs' : 'sm'} text-[#0077b5] hover:underline font-medium transition-colors duration-200`}
               >
                 LinkedIn
               </a>
@@ -506,7 +566,7 @@ function ProductCard({ product, formatDate, onEnrich, onSwipeComplete }) {
                 href={product.phGithub}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="text-sm text-gray-900 hover:underline font-medium transition-colors duration-200"
+                className={`text-${isMobile ? 'xs' : 'sm'} text-gray-900 hover:underline font-medium transition-colors duration-200`}
               >
                 GitHub
               </a>
@@ -514,7 +574,7 @@ function ProductCard({ product, formatDate, onEnrich, onSwipeComplete }) {
           )}
         </div>
       </div>
-      <div className="px-4 py-2 flex justify-between items-center mt-2">
+      <div className="px-4 py-2 flex justify-between items-center mt-2 sticky bottom-0 bg-gradient-to-t from-white to-transparent">
         <div className="flex items-center gap-4">
           <button
             onClick={handleUpvote}
@@ -535,15 +595,57 @@ function ProductCard({ product, formatDate, onEnrich, onSwipeComplete }) {
             {product.status ? product.status.charAt(0).toUpperCase() + product.status.slice(1) : 'Unknown'}
           </span>
         </div>
-        <a
-          href={product.phLink || product.productHuntLink}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="text-sm text-gray-600 hover:text-gray-900 font-medium hover:underline transition-colors duration-200 px-3 py-1 bg-orange-50 rounded-md shadow-sm"
-        >
-          View on Product Hunt
-        </a>
+        <div className="flex items-center gap-2">
+          {!isMobile && product.status === 'pending' && (
+            <>
+              <button
+                onClick={() => updateProductStatus('approved')}
+                disabled={isProcessing}
+                className={`px-3 py-1 text-sm font-medium rounded-md shadow-sm ${
+                  isProcessing ? 'bg-green-100 text-green-700 cursor-not-allowed' : 'bg-green-500 text-white hover:bg-green-600'
+                }`}
+              >
+                {isProcessing ? 'Processing...' : 'Accept'}
+              </button>
+              <button
+                onClick={() => updateProductStatus('rejected')}
+                disabled={isProcessing}
+                className={`px-3 py-1 text-sm font-medium rounded-md shadow-sm ${
+                  isProcessing ? 'bg-red-100 text-red-700 cursor-not-allowed' : 'bg-red-500 text-white hover:bg-red-600'
+                }`}
+              >
+                {isProcessing ? 'Processing...' : 'Reject'}
+              </button>
+            </>
+          )}
+          <a
+            href={product.phLink || product.productHuntLink}
+            target="_blank"
+            rel="noopener noreferrer"
+            className={`text-${isMobile ? 'xs' : 'sm'} text-gray-600 hover:text-gray-900 font-medium hover:underline transition-colors duration-200 px-3 py-1 bg-orange-50 rounded-md shadow-sm`}
+          >
+            View on Product Hunt
+          </a>
+        </div>
       </div>
+      {isMobile && (
+        <div className="text-center text-gray-600 text-xs mt-2 swipe-instructions">
+          {selectedStatus === 'rejected' ? (
+            <span>
+              Swipe <span className="text-green-500 font-bold">→ right</span> to accept
+            </span>
+          ) : selectedStatus === 'approved' ? (
+            <span>
+              Swipe <span className="text-red-500 font-bold">← left</span> to reject
+            </span>
+          ) : (
+            <span>
+              Swipe <span className="text-red-500 font-bold">← left</span> to reject or{' '}
+              <span className="text-green-500 font-bold">→ right</span> to accept
+            </span>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -578,7 +680,8 @@ ProductList.propTypes = {
   selectedStatus: PropTypes.string,
   selectedSort: PropTypes.string,
   formatDate: PropTypes.func,
-  onEnrich: PropTypes.func
+  onEnrich: PropTypes.func,
+  onStatusChange: PropTypes.func
 };
 
 ProductCard.propTypes = {
@@ -607,7 +710,10 @@ ProductCard.propTypes = {
   }).isRequired,
   formatDate: PropTypes.func,
   onEnrich: PropTypes.func,
-  onSwipeComplete: PropTypes.func
+  onStatusChange: PropTypes.func,
+  onSwipeComplete: PropTypes.func,
+  isMobile: PropTypes.bool,
+  selectedStatus: PropTypes.string
 };
 
 export default ProductList;
