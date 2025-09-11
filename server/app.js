@@ -3,6 +3,8 @@ const path = require('path');
 const cors = require('cors');
 const helmet = require('helmet');
 require('dotenv').config();
+const fetch = require('node-fetch');
+const cheerio = require('cheerio');
 
 // Import routes
 const cronRoutes = require('./routes/cron');
@@ -21,7 +23,7 @@ const PORT = process.env.PORT || 5000;
 
 // Security middleware
 app.use(helmet({
-  contentSecurityPolicy: false, // Disable for React development
+  contentSecurityPolicy: false,
   crossOriginEmbedderPolicy: false
 }));
 
@@ -53,6 +55,171 @@ if (process.env.NODE_ENV === 'production') {
 // API Routes
 app.use('/api/cron', cronRoutes);
 
+// OAuth callback for Product Hunt access token
+app.get('/callback', async (req, res) => {
+  const { code } = req.query;
+  if (!code) {
+    return res.status(400).json({ error: 'Authorization code is required' });
+  }
+
+  try {
+    const response = await fetch('https://api.producthunt.com/v2/oauth/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        client_id: process.env.PRODUCT_HUNT_CLIENT_ID,
+        client_secret: process.env.PRODUCT_HUNT_CLIENT_SECRET,
+        redirect_uri: process.env.PRODUCT_HUNT_REDIRECT_URI,
+        grant_type: 'authorization_code',
+        code
+      })
+    });
+
+    const data = await response.json();
+    if (!response.ok || data.error) {
+      console.error('OAuth token exchange failed:', data.error_description || response.statusText);
+      return res.status(500).json({ error: 'Failed to exchange authorization code', details: data.error_description });
+    }
+
+    console.log('Access Token:', data.access_token);
+    res.json({ success: true, access_token: data.access_token });
+  } catch (error) {
+    console.error('OAuth callback error:', error.message);
+    res.status(500).json({ error: 'Internal server error', details: error.message });
+  }
+});
+
+// Product Hunt upvotes endpoint using web scraping
+app.get('/api/ph-upvotes', async (req, res) => {
+  const { url, productId } = req.query;
+
+  if (!url || !productId) {
+    return res.status(400).json({
+      success: false,
+      error: { message: 'Missing required parameters', details: 'Both url and productId are required' }
+    });
+  }
+
+  let slug;
+  try {
+    const urlObj = new URL(url);
+    const pathParts = urlObj.pathname.split('/');
+    const productIndex = pathParts.indexOf('products');
+    if (productIndex !== -1 && pathParts[productIndex + 1]) {
+      slug = pathParts[productIndex + 1];
+    } else {
+      throw new Error('Invalid Product Hunt URL format');
+    }
+  } catch (error) {
+    console.error(`Invalid URL for productId ${productId}: ${url}`, error.message);
+    return res.status(400).json({
+      success: false,
+      error: { message: 'Invalid Product Hunt URL', details: error.message }
+    });
+  }
+
+  try {
+    // Fetch the Product Hunt page
+    const response = await fetch(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+      }
+    });
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+
+    const html = await response.text();
+    const $ = cheerio.load(html);
+
+    // Select the upvote count element (second button, XPath: //*[@id="root-container"]/div[4]/div/main/section/button[2]/div/p)
+    const upvoteElement = $('#root-container div main section button:nth-child(2) div p.text-14');
+    const upvotesText = upvoteElement.text().trim();
+    const upvotes = parseInt(upvotesText, 10);
+
+    if (isNaN(upvotes)) {
+      throw new Error('Unable to parse upvote count');
+    }
+
+    // Extract product name for consistency
+    const nameElement = $('h1').first();
+    const name = nameElement.text().trim() || 'Unknown Product';
+
+    // Update database with upvotes and name
+    await dbService.updateProductFields(productId, { upvotes, name });
+    console.log(`Updated product ${productId} with upvotes: ${upvotes}, name: ${name}`);
+
+    return res.json({
+      success: true,
+      productId,
+      url,
+      upvotes
+    });
+  } catch (error) {
+    console.error(`Error fetching upvotes for slug ${slug}:`, error.message);
+    return res.status(500).json({
+      success: false,
+      error: { message: 'Failed to fetch upvotes', details: error.message }
+    });
+  }
+
+  // Note: GraphQL implementation (commented out for future use when API credentials are provided)
+  /*
+  if (process.env.PRODUCT_HUNT_API_TOKEN) {
+    const query = `
+      query {
+        post(slug: "${slug}") {
+          id
+          name
+          votesCount
+        }
+      }
+    `;
+    try {
+      const response = await fetch('https://api.producthunt.com/v2/api/graphql', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${process.env.PRODUCT_HUNT_API_TOKEN}`
+        },
+        body: JSON.stringify({ query })
+      });
+
+      if (response.status === 429) {
+        return res.status(429).json({
+          success: false,
+          error: { message: 'Rate limit exceeded', details: 'Product Hunt API rate limit reached' }
+        });
+      }
+
+      const data = await response.json();
+      if (!response.ok || data.errors) {
+        throw new Error(data.errors ? data.errors[0].message : 'GraphQL request failed');
+      }
+
+      const { post } = data.data;
+      if (!post) {
+        throw new Error(`No post found for slug: ${slug}`);
+      }
+
+      const { votesCount, id: phId, name } = post;
+      await dbService.updateProductFields(productId, { upvotes: votesCount, phId, name });
+      console.log(`Updated product ${productId} with upvotes: ${votesCount}, phId: ${phId}, name: ${name}`);
+
+      return res.json({
+        success: true,
+        productId,
+        url,
+        upvotes: votesCount
+      });
+    } catch (error) {
+      console.error(`GraphQL error for slug ${slug}:`, error.message);
+      // Fall back to scraping if GraphQL fails
+    }
+  }
+  */
+});
+
 // LinkedIn API proxy
 app.post('/api/linkedin/companies', async (req, res) => {
   try {
@@ -61,11 +228,10 @@ app.post('/api/linkedin/companies', async (req, res) => {
       return res.status(400).json({ error: 'LinkedIn URL is required' });
     }
     
-    const API_KEY = process.env.SPECTER_API_KEY || 'd6c0bfe4e7dab55384f8556b7c39e45aae439ce179fbb864b96545646b3577a4'; // Use env var if available
+    const API_KEY = process.env.SPECTER_API_KEY || 'd6c0bfe4e7dab55384f8556b7c39e45aae439ce179fbb864b96545646b3577a4';
     
     console.log(`Enriching LinkedIn URL: ${linkedin_url}`);
     
-    // Validate LinkedIn URL format
     if (!linkedin_url.includes('linkedin.com/company/')) {
       return res.status(400).json({ 
         error: 'Invalid LinkedIn URL format',
@@ -90,7 +256,7 @@ app.post('/api/linkedin/companies', async (req, res) => {
     
     const data = await response.json();
     console.log(`Successfully enriched: ${linkedin_url}`);
-    res.json(data); // Return full array; frontend handles [0]
+    res.json(data);
   } catch (error) {
     console.error('Specter API proxy error:', error);
     res.status(500).json({ 
@@ -114,20 +280,17 @@ app.get('/api/products', async (req, res) => {
       products = await dbService.getAllProducts();
     }
 
-    // Apply sorting
-    if (sort === 'votes') {
+    if (sort === 'upvotes') {
       products.sort((a, b) => {
         const votesA = a.upvotes || 0;
         const votesB = b.upvotes || 0;
         if (votesA !== votesB) {
-          return votesB - votesA; // Highest votes first
+          return votesB - votesA;
         }
-        // If votes are equal, sort by newest first
         return new Date(b.publishedAt) - new Date(a.publishedAt);
       });
     }
 
-    // Apply limit
     if (limit && !isNaN(limit)) {
       products = products.slice(0, parseInt(limit));
     }
@@ -149,7 +312,7 @@ app.get('/api/products', async (req, res) => {
   }
 });
 
-// Update product fields (e.g., linkedInData, status, phVotes)
+// Update product fields
 app.patch('/api/products/:id', async (req, res) => {
   try {
     const { id } = req.params;
@@ -175,72 +338,6 @@ app.patch('/api/products/:id', async (req, res) => {
       success: false,
       error: {
         message: 'Failed to update product',
-        details: error.message
-      }
-    });
-  }
-});
-
-// Upvote product endpoint
-app.post('/api/products/:id/upvote', async (req, res) => {
-  try {
-    const { id } = req.params;
-    const result = await dbService.upvoteProduct(id);
-    
-    if (result.success) {
-      res.json({
-        success: true,
-        message: 'Product upvoted successfully',
-        upvotes: result.upvotes
-      });
-    } else {
-      res.status(404).json({
-        success: false,
-        error: {
-          message: 'Product not found',
-          details: result.error
-        }
-      });
-    }
-  } catch (error) {
-    console.error('Error upvoting product:', error);
-    res.status(500).json({
-      success: false,
-      error: {
-        message: 'Failed to upvote product',
-        details: error.message
-      }
-    });
-  }
-});
-
-// Unvote (remove upvote) endpoint
-app.post('/api/products/:id/unvote', async (req, res) => {
-  try {
-    const { id } = req.params;
-    const result = await dbService.unvoteProduct(id);
-
-    if (result.success) {
-      res.json({
-        success: true,
-        message: 'Product unvoted successfully',
-        upvotes: result.upvotes
-      });
-    } else {
-      res.status(404).json({
-        success: false,
-        error: {
-          message: 'Product not found',
-          details: result.error
-        }
-      });
-    }
-  } catch (error) {
-    console.error('Error unvoting product:', error);
-    res.status(500).json({
-      success: false,
-      error: {
-        message: 'Failed to unvote product',
         details: error.message
       }
     });
@@ -297,14 +394,13 @@ app.get('/api/stats', async (req, res) => {
   }
 });
 
-// Status endpoint (with optional light authentication)
+// Status endpoint
 app.get('/api/status', async (req, res) => {
   try {
     const stats = await dbService.getStats();
     const scheduleStatus = await scheduleService.getScheduleStatus();
     const cacheStats = await cacheService.getCacheStats();
     
-    // Get last cron run info
     const lastCronRun = scheduleStatus.jobs['rss-fetch']?.lastRun || null;
     
     const statusInfo = {
@@ -356,7 +452,7 @@ app.get('/api/status', async (req, res) => {
   }
 });
 
-// Admin API routes for maker approval/rejection (protected)
+// Admin API routes for maker approval/rejection
 app.get('/api/makers', logAuthAttempt, auth, async (req, res) => {
   try {
     const { status } = req.query;
@@ -389,8 +485,6 @@ app.post('/api/makers/:id/approve', logAuthAttempt, auth, async (req, res) => {
   try {
     const { id } = req.params;
     
-    // First get the product data before approval
-    const productIds = await dbService.getProductList();
     const product = await dbService.getItem(`product:${id}`);
     
     if (!product) {
@@ -402,8 +496,7 @@ app.post('/api/makers/:id/approve', logAuthAttempt, auth, async (req, res) => {
       });
     }
 
-    // Update the product status to approved
-    const success = await dbService.updateProductStatus(id, 'approved');
+    const success = await dbService.updateProductFields(id, { status: 'approved' });
     
     if (!success) {
       return res.status(500).json({
@@ -414,13 +507,12 @@ app.post('/api/makers/:id/approve', logAuthAttempt, auth, async (req, res) => {
       });
     }
 
-    // Try to sync to Google Sheets (don't block approval if this fails)
     let sheetsResult = { synced: false, error: null };
     
     try {
       const syncSuccess = await googleSheetsService.addApprovedMaker(product);
       if (syncSuccess) {
-        await dbService.updateProductSheetsSyncStatus(id, true);
+        await dbService.updateProductFields(id, { sheetsSynced: true });
         sheetsResult.synced = true;
         console.log(`Successfully synced approved maker to Google Sheets: ${product.name}`);
       } else {
@@ -430,7 +522,6 @@ app.post('/api/makers/:id/approve', logAuthAttempt, auth, async (req, res) => {
     } catch (sheetsError) {
       console.error('Failed to sync to Google Sheets:', sheetsError.message);
       sheetsResult.error = sheetsError.message;
-      // Don't update sync status to true on failure - will be retried later
     }
 
     res.json({
@@ -453,7 +544,7 @@ app.post('/api/makers/:id/approve', logAuthAttempt, auth, async (req, res) => {
 app.post('/api/makers/:id/reject', logAuthAttempt, auth, async (req, res) => {
   try {
     const { id } = req.params;
-    const success = await dbService.updateProductStatus(id, 'rejected');
+    const success = await dbService.updateProductFields(id, { status: 'rejected' });
     
     if (success) {
       res.json({
@@ -480,10 +571,9 @@ app.post('/api/makers/:id/reject', logAuthAttempt, auth, async (req, res) => {
   }
 });
 
-// Google Sheets resync endpoint (for cron or manual retry) - protected
+// Google Sheets resync endpoint
 app.post('/api/cron/resync-sheets', logAuthAttempt, auth, async (req, res) => {
   try {
-    // Get all approved products that haven't been synced to sheets yet
     const needingSyncProducts = await dbService.getApprovedProductsNeedingSync();
     
     if (needingSyncProducts.length === 0) {
@@ -503,7 +593,7 @@ app.post('/api/cron/resync-sheets', logAuthAttempt, auth, async (req, res) => {
       try {
         const syncSuccess = await googleSheetsService.addApprovedMaker(product);
         if (syncSuccess) {
-          await dbService.updateProductSheetsSyncStatus(product.id, true);
+          await dbService.updateProductFields(product.id, { sheetsSynced: true });
           
           results.push({
             productId: product.id,
@@ -641,7 +731,7 @@ app.get('/', (req, res) => {
       'POST /api/cron/fetch': 'Trigger RSS feed fetching for all categories (includes LinkedIn enrichment)',
       'POST /api/cron/fetch/:category': 'Trigger RSS feed fetching for specific category',
       'GET /api/products': 'Get all products (supports ?category and ?status filters)',
-      'PATCH /api/products/:id': 'Update product fields (e.g., linkedInData, status)',
+      'PATCH /api/products/:id': 'Update product fields (e.g., linkedInData, status, upvotes)',
       'GET /api/products/category/:category': 'Get products by category',
       'GET /api/makers': 'Get all makers (supports ?status filter) [AUTH REQUIRED]',
       'POST /api/makers/:id/approve': 'Approve a maker (auto-syncs to Google Sheets) [AUTH REQUIRED]',
@@ -650,7 +740,9 @@ app.get('/', (req, res) => {
       'GET /api/debug/enriched': 'Get all products with LinkedIn profiles (for testing)',
       'GET /api/stats': 'Get database statistics',
       'GET /api/status': 'Get system status including cron runs and maker counts',
-      'GET /api/health': 'Health check endpoint'
+      'GET /api/health': 'Health check endpoint',
+      'GET /api/ph-upvotes': 'Get Product Hunt upvote count for a specific product',
+      'GET /callback': 'OAuth callback for Product Hunt access token'
     },
     authentication: {
       method: process.env.AUTH_METHOD || 'basic',
@@ -665,7 +757,8 @@ app.get('/', (req, res) => {
         fetchCategory: `POST ${req.protocol}://${req.get('host')}/api/cron/fetch/developer-tools`,
         getProducts: `GET ${req.protocol}://${req.get('host')}/api/products`,
         getByCategory: `GET ${req.protocol}://${req.get('host')}/api/products/category/saas`,
-        getStatus: `GET ${req.protocol}://${req.get('host')}/api/status`
+        getStatus: `GET ${req.protocol}://${req.get('host')}/api/status`,
+        getUpvotes: `GET ${req.protocol}://${req.get('host')}/api/ph-upvotes?url=https://www.producthunt.com/products/oh-dear/launches&productId=123`
       }
     }
   });
@@ -702,11 +795,10 @@ if (process.env.NODE_ENV === 'production') {
   });
 }
 
-// Startup validation and debugging
+// Startup validation
 async function validateStartup() {
   console.log('=== STARTUP VALIDATION ===');
   
-  // Check critical dependencies
   console.log('Checking dependencies...');
   try {
     const GoogleSearchResults = require('google-search-results-nodejs');
@@ -715,10 +807,9 @@ async function validateStartup() {
     const { google } = require('googleapis');
     console.log('✓ googleapis:', typeof google);
   } catch (error) {
-    console.error('✗ Dependency check failed:', error.message);
+    console.log('✗ Dependency check failed:', error.message);
   }
   
-  // Check environment variables
   console.log('\nEnvironment Variables:');
   console.log('• NODE_ENV:', process.env.NODE_ENV || 'development');
   console.log('• PORT:', process.env.PORT || '5000');
@@ -726,9 +817,11 @@ async function validateStartup() {
   console.log('• GOOGLE_SHEETS_ID:', !!process.env.GOOGLE_SHEETS_ID ? '[SET]' : '[NOT SET]');
   console.log('• GOOGLE_SERVICE_ACCOUNT_EMAIL:', !!process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL ? '[SET]' : '[NOT SET]');
   console.log('• GOOGLE_PRIVATE_KEY:', !!process.env.GOOGLE_PRIVATE_KEY ? '[SET]' : '[NOT SET]');
-  console.log('• GOOGLE_SERVICE_ACCOUNT_KEY:', !!process.env.GOOGLE_SERVICE_ACCOUNT_KEY ? '[SET]' : '[NOT SET]');
+  console.log('• PRODUCT_HUNT_CLIENT_ID:', !!process.env.PRODUCT_HUNT_CLIENT_ID ? '[SET]' : '[NOT SET]');
+  console.log('• PRODUCT_HUNT_CLIENT_SECRET:', !!process.env.PRODUCT_HUNT_CLIENT_SECRET ? '[SET]' : '[NOT SET]');
+  console.log('• PRODUCT_HUNT_REDIRECT_URI:', !!process.env.PRODUCT_HUNT_REDIRECT_URI ? '[SET]' : '[NOT SET]');
+  console.log('• PRODUCT_HUNT_API_TOKEN:', !!process.env.PRODUCT_HUNT_API_TOKEN ? '[SET]' : '[NOT SET]');
   
-  // Test Google Sheets service
   console.log('\nTesting Google Sheets service...');
   try {
     const sheetsStatus = await googleSheetsService.getSyncStatus();
@@ -754,15 +847,12 @@ app.listen(PORT, async () => {
   console.log(`URL: http://localhost:${PORT}`);
   console.log('=================================');
   
-  // Run startup validation
   await validateStartup();
   
   console.log('Available endpoints:');
   console.log(`• POST /api/cron/fetch - Trigger RSS fetch`);
   console.log(`• GET /api/products - Get all products`);
   console.log(`• PATCH /api/products/:id - Update product fields`);
-  console.log(`• POST /api/products/:id/upvote - Upvote a product`);
-  console.log(`• POST /api/products/:id/unvote - Remove upvote from a product`);
   console.log(`• GET /api/products/category/:category - Get products by category`);
   console.log(`• GET /api/makers - Get makers (admin)`);
   console.log(`• POST /api/makers/:id/approve - Approve a maker (admin)`);
@@ -773,6 +863,8 @@ app.listen(PORT, async () => {
   console.log(`• GET /api/stats - Get database statistics`);
   console.log(`• GET /api/status - Get system status`);
   console.log(`• GET /api/health - Health check`);
+  console.log(`• GET /api/ph-upvotes - Get Product Hunt upvote count`);
+  console.log(`• GET /callback - OAuth callback for Product Hunt access token`);
 });
 
 module.exports = app;
