@@ -14,7 +14,8 @@ const MainDashboard = () => {
   const [selectedSort, setSelectedSort] = useState('upvotes');
   const [isMobile, setIsMobile] = useState(false);
 
-  const categories = ['artificial-intelligence', 'developer-tools', 'saas'];
+  const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000';
+  const categories = ['all', 'artificial-intelligence', 'developer-tools', 'saas'];
 
   // Check for mobile view and set default status to pending
   useEffect(() => {
@@ -45,26 +46,34 @@ const MainDashboard = () => {
     try {
       setLoading(true);
       setError(null);
-      
-      const response = await fetch('/api/products');
+
+      const params = new URLSearchParams();
+      if (selectedCategory !== 'all') params.append('category', selectedCategory);
+      if (selectedStatus !== 'all') params.append('status', selectedStatus);
+      if (selectedSort) params.append('sort', selectedSort);
+
+      const response = await fetch(`${API_BASE_URL}/api/products?${params.toString()}`);
       const data = await response.json();
-      
+
       if (data.success) {
         const enrichedProducts = data.products.map(product => ({
           ...product,
-          formattedDate: formatDate(new Date(product.publishedAt || product.createdAt))
+          formattedDate: formatDate(new Date(product.publishedAt || product.createdAt)),
+          upvotes: product.upvotes !== undefined ? product.upvotes : product.phUpvotes // Backward compatibility
         }));
-        
+
         const uniqueProducts = enrichedProducts.filter((product, index, self) =>
           index === self.findIndex((p) => p.id === product.id)
         );
-        
+
         setProducts(uniqueProducts);
       } else {
         setError(data.error?.message || 'Failed to load products');
+        toast.error(data.error?.message || 'Failed to load products');
       }
     } catch (err) {
       setError('Failed to load products');
+      toast.error('Failed to load products');
       console.error('Error loading products:', err);
     } finally {
       setLoading(false);
@@ -73,9 +82,9 @@ const MainDashboard = () => {
 
   const loadStats = async () => {
     try {
-      const response = await fetch('/api/stats');
+      const response = await fetch(`${API_BASE_URL}/api/stats`);
       const data = await response.json();
-      
+
       if (data.success) {
         setStats(data.database);
       } else {
@@ -102,16 +111,16 @@ const MainDashboard = () => {
     // Apply sorting
     if (selectedSort === 'upvotes') {
       filtered.sort((a, b) => {
-        const votesA = a.upvotes || 0;
-        const votesB = b.upvotes || 0;
+        const votesA = a.upvotes || a.phUpvotes || 0;
+        const votesB = b.upvotes || b.phUpvotes || 0;
         if (votesA !== votesB) return votesB - votesA;
         return new Date(b.createdAt || b.publishedAt) - new Date(a.createdAt || a.publishedAt);
       });
     } else if (selectedSort === 'top50') {
-      filtered = filtered.filter(p => (p.upvotes || 0) > 0);
+      filtered = filtered.filter(p => (p.upvotes || p.phUpvotes || 0) > 0);
       filtered.sort((a, b) => {
-        const votesA = a.upvotes || 0;
-        const votesB = b.upvotes || 0;
+        const votesA = a.upvotes || a.phUpvotes || 0;
+        const votesB = b.upvotes || b.phUpvotes || 0;
         if (votesA !== votesB) return votesB - votesA;
         return new Date(b.createdAt || b.publishedAt) - new Date(a.createdAt || a.publishedAt);
       });
@@ -147,46 +156,44 @@ const MainDashboard = () => {
       setError(null);
       setMessage(null);
 
-      const response = await fetch('/api/cron/fetch', {
+      const endpoint = selectedCategory === 'all' 
+        ? `${API_BASE_URL}/api/cron/fetch`
+        : `${API_BASE_URL}/api/cron/fetch/${selectedCategory}`;
+      
+      const response = await fetch(endpoint, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: { 'Content-Type': 'application/json' }
       });
 
       const data = await response.json();
 
       if (data.success) {
         if (data.skipped) {
-          setMessage({
-            type: 'success',
-            text: `RSS fetch skipped: ${data.reason}`
-          });
+          setMessage({ type: 'success', text: `RSS fetch skipped: ${data.reason}` });
+          toast.success(`RSS fetch skipped: ${data.reason}`);
         } else if (data.results && data.results.rss && data.results.rss.summary) {
           const summary = data.results.rss.summary;
           let messageText = `RSS fetch completed! Processed: ${summary.totalProcessed}, New: ${summary.totalNew}, Duplicates: ${summary.totalDuplicates}`;
           if (summary.totalDuplicates > 0) {
             messageText += ` (duplicates are automatically filtered based on normalized Product Hunt links)`;
           }
-          setMessage({
-            type: 'success',
-            text: messageText
-          });
+          setMessage({ type: 'success', text: messageText });
+          toast.success(messageText);
         } else {
-          setMessage({
-            type: 'success',
-            text: 'RSS fetch completed successfully'
-          });
+          setMessage({ type: 'success', text: 'RSS fetch completed successfully' });
+          toast.success('RSS fetch completed successfully');
         }
-        
+
         await loadProducts();
         await loadStats();
         setSelectedSort('newest');
       } else {
         setError(data.error?.message || 'RSS fetch failed');
+        toast.error(data.error?.message || 'RSS fetch failed');
       }
     } catch (err) {
       setError('Failed to trigger RSS fetch');
+      toast.error('Failed to trigger RSS fetch');
       console.error('Error fetching RSS:', err);
     } finally {
       setFetching(false);
@@ -209,12 +216,13 @@ const MainDashboard = () => {
         product.id === id ? { ...product, status: newStatus } : product
       )
     );
+    loadStats();
   };
 
-  const formatDate = (dateString) => {
-    return new Date(dateString).toLocaleDateString('en-US', {
+  const formatDate = (date) => {
+    return date.toLocaleDateString('en-US', {
       year: 'numeric',
-      month: 'short',  
+      month: 'short',
       day: 'numeric',
       hour: '2-digit',
       minute: '2-digit'
@@ -291,7 +299,7 @@ const MainDashboard = () => {
                 className="form-input w-full py-2 px-3 rounded-lg border border-gray-300 focus:ring-2 focus:ring-orange-500 focus:border-orange-500"
               >
                 <option value="all">All Categories</option>
-                {categories.map(category => (
+                {categories.slice(1).map(category => (
                   <option key={category} value={category}>
                     {category.replace('-', ' ').replace(/\b\w/g, l => l.toUpperCase())}
                   </option>
@@ -371,7 +379,7 @@ const MainDashboard = () => {
         </div>
 
         {error && (
-          <div className="error-message relative mb-6">
+          <div className="error-message relative mb-6 bg-red-100 text-red-800 p-4 rounded-lg">
             <strong>Error:</strong> {error}
             <button onClick={clearMessage} className="absolute top-4 right-4 text-red-500 hover:text-red-700">
               <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -382,7 +390,7 @@ const MainDashboard = () => {
         )}
 
         {message && (
-          <div className="success-message relative mb-6">
+          <div className="success-message relative mb-6 bg-green-100 text-green-800 p-4 rounded-lg">
             <strong>Success:</strong> {message.text}
             <button onClick={clearMessage} className="absolute top-4 right-4 text-green-500 hover:text-green-700">
               <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -394,7 +402,7 @@ const MainDashboard = () => {
 
         {loading ? (
           <div className="text-center py-12">
-            <div className="loading-spinner mx-auto"></div>
+            <div className="loading-spinner mx-auto w-10 h-10 border-4 border-t-transparent border-gray-600 rounded-full animate-spin"></div>
             <p className="text-gray-600 mt-4">Loading products...</p>
           </div>
         ) : (
